@@ -223,6 +223,7 @@ export function createTimelineRuntime(options: {
     options.shell.audioAnalysisOverlay,
     () => timeline,
     () => options.preview.audio,
+    options.offsetSeconds,
     options.ui.audioAnalysis,
   );
   // The audio-analysis controls are ordinary settings rows; mirror their values
@@ -243,7 +244,7 @@ export function createTimelineRuntime(options: {
       scrubberSpectrum.curve = audioAnalysis.curve;
       scrubberSpectrum.draw();
     }
-    audioAnalysis.draw(options.offsetSeconds());
+    audioAnalysis.draw();
   };
   const analysisSubscriptions = analysisKeys
     .filter((key) => values.byId.has(key))

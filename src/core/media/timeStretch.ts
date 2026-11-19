@@ -11,7 +11,6 @@ import processorUrl from "./timeStretchProcessor.ts?worker&url";
 import transientWorkerUrl from "./timeStretchTransients.ts?worker&url";
 
 const PROCESSOR_NAME = "rpe-time-stretch";
-const STOP_FADE_SECONDS = 0.008;
 const RESTART_CROSSFADE_SECONDS = 0.008;
 
 interface TransientWorkerScope {
@@ -148,30 +147,24 @@ export class TimeStretchStretcher {
     return anchor;
   }
 
-  /** Fade out the current stream without tearing down the node. */
+  /** Halt the current stream on the next render quantum. */
   stop(): void {
     if (!this.active || this.disposed) {
       return;
     }
     this.active = false;
-    this.node.port.postMessage({ type: "stop", fadeSeconds: STOP_FADE_SECONDS });
+    this.node.port.postMessage({ type: "stop" });
   }
 
-  /** Stop, then disconnect after the fade so closing a document does not click. */
+  /** Stop immediately, then release the node. */
   dispose(): void {
     if (this.disposed) {
       return;
     }
     this.stop();
     this.disposed = true;
-    // Disconnect after the processor's fade so closing a document does not click.
-    setTimeout(
-      () => {
-        this.node.disconnect();
-        this.output.disconnect();
-        this.node.port.close();
-      },
-      (STOP_FADE_SECONDS + 0.02) * 1000,
-    );
+    this.node.disconnect();
+    this.output.disconnect();
+    this.node.port.close();
   }
 }

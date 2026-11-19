@@ -11,7 +11,6 @@ import { values } from "../../../../core/state/values.ts";
 /** Live timeline analysis plus the callbacks its actions report through. */
 interface AnalysisActions {
   audioAnalysis: AudioAnalysis;
-  offsetSeconds(): number;
   reportError(error: unknown): void;
 }
 let current: AnalysisActions | null = null;
@@ -38,7 +37,7 @@ export function openAudioAnalysis(): void {
   openSettings("playback");
   bound.audioAnalysis
     .ensureData()
-    .then(() => bound.audioAnalysis.draw(bound.offsetSeconds()))
+    .then(() => bound.audioAnalysis.draw())
     .catch(bound.reportError);
-  bound.audioAnalysis.draw(bound.offsetSeconds());
+  bound.audioAnalysis.draw();
 }

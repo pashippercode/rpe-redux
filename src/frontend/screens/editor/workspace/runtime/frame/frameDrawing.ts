@@ -97,7 +97,6 @@ export interface FrameDrawingOptions {
     "duration" | "visible" | "draw" | "invalidationRevision" | "authoringRegionVisible"
   > &
     Parameters<TrajectoryPanel["tick"]>[3];
-  offsetSeconds(): number;
   updateLineInfo(): void;
   completeFirstRender(): void;
   /** Whether any authoring region currently shares the stage with the preview. */
@@ -241,7 +240,7 @@ export function createFrameDrawing(runtime: FrameDrawingOptions) {
                 multiEditTimelineMs = performance.now() - multiEditStarted;
               }
               const audioAnalysisStarted = performance.now();
-              runtime.audioAnalysis.draw(runtime.offsetSeconds());
+              runtime.audioAnalysis.draw();
               audioAnalysisMs = performance.now() - audioAnalysisStarted;
               timelineMs = performance.now() - started;
             }

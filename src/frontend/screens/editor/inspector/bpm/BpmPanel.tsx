@@ -372,9 +372,9 @@ function BpmAttributes({ session, chart }: Pick<BpmForm, "session" | "chart">) {
       return false;
     }
   };
-  const applyBpm = () => {
+  const applyBpm = (nextBpm = bpm) => {
     try {
-      commitBpm(bpmRows(bpm), t("editorPanels.inspector.form.bpm.title"));
+      commitBpm(bpmRows(nextBpm), t("editorPanels.inspector.form.bpm.title"));
       setError("");
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -410,11 +410,16 @@ function BpmAttributes({ session, chart }: Pick<BpmForm, "session" | "chart">) {
               type="number"
               step="any"
               value={bpm}
+              stepper={{ decrease: 1, increase: 1, decreaseOuter: 5, increaseOuter: 5 }}
+              onNumericWheel={(next) => {
+                setDraft({ source: entry, bpm: next });
+                applyBpm(next);
+              }}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setDraft({ source: entry, bpm: value });
               }}
-              onBlur={applyBpm}
+              onBlur={() => applyBpm()}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -483,6 +488,11 @@ function BpmOffset({ session, chart }: Pick<BpmForm, "session" | "chart">) {
             step="any"
             value={value}
             aria-invalid={Boolean(error)}
+            stepper={{ decrease: 1, increase: 1, decreaseOuter: 10, increaseOuter: 10 }}
+            onNumericWheel={(next) => {
+              setDraft({ source, value: next });
+              apply(next);
+            }}
             onChange={(event) => setDraft({ source, value: event.currentTarget.value })}
             onBlur={() => apply()}
             onKeyDown={(event) => {

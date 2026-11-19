@@ -555,7 +555,6 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       if (
         props.disabled ||
         props.readOnly ||
-        document.activeElement !== input ||
         event.defaultPrevented ||
         event.deltaY === 0
       ) {
@@ -563,16 +562,16 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       }
       // React wheel handlers are passive in Chromium. Cancel the native step/scroll here.
       event.preventDefault();
-      const multiplier = event.shiftKey ? 10 : event.ctrlKey ? 5 : 1;
       // The wheel takes the same path the buttons do, `stepWrap` and all; the
       // native step would stop dead at either end.
       if (isStepper) {
         const direction = event.deltaY < 0 ? 1 : -1;
         const amount = direction > 0 ? stepperOptions.increase : stepperOptions.decrease;
-        stepField(input, direction, multiplier, stepWrap, amount);
+        stepField(input, direction, 1, stepWrap, amount);
         onNumericWheel?.(input.value, input);
         return;
       }
+      const multiplier = event.shiftKey ? 10 : event.ctrlKey ? 5 : 1;
       try {
         event.deltaY < 0 ? input.stepUp(multiplier) : input.stepDown(multiplier);
         input.dispatchEvent(new Event("input", { bubbles: true }));

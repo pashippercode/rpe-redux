@@ -45,6 +45,8 @@ export class AudioAnalysis {
   canvas: HTMLCanvasElement | null;
   getTimeline: () => AnalysisTimeline | null | undefined;
   getAudio: () => AnalysisAudioSource;
+  /** Chart offset in seconds, applied to every paint including async completions. */
+  getOffsetSeconds: () => number;
   visibility: AudioAnalysisVisibility;
   enabled: boolean;
   alpha: number;
@@ -69,11 +71,13 @@ export class AudioAnalysis {
     canvas: HTMLCanvasElement | null,
     getTimeline: () => AnalysisTimeline | null | undefined,
     getAudio: () => AnalysisAudioSource,
+    getOffsetSeconds: () => number,
     visibility: AudioAnalysisVisibility,
   ) {
     this.canvas = canvas;
     this.getTimeline = getTimeline;
     this.getAudio = getAudio;
+    this.getOffsetSeconds = getOffsetSeconds;
     this.visibility = visibility;
     this.enabled = false;
     this.alpha = 0.5;
@@ -204,8 +208,14 @@ export class AudioAnalysis {
     return pending;
   }
 
-  /** Paint the waveform against the timeline viewport; `offsetSeconds` shifts the sampled time. */
-  draw(offsetSeconds = 0): void {
+  /**
+   * Paint the waveform against the timeline viewport.
+   *
+   * The chart offset is read from the runtime on every paint, so an analysis
+   * that completes asynchronously lands at its final position instead of being
+   * painted once at zero offset and corrected by a later frame.
+   */
+  draw(): void {
     const canvas = this.canvas;
     if (!canvas || !this.enabled) {
       this.visibility.set(false);
@@ -260,6 +270,7 @@ export class AudioAnalysis {
     const bandHalf = Math.max(8, ((right - left) * clamp01(this.width)) / 2);
     const timelineHeight = bottom - top;
     const source = this.data;
+    const offsetSeconds = this.getOffsetSeconds();
     const palette = readCanvasPalette();
     const alpha = clamp01(this.alpha);
     const curve = this.curve;

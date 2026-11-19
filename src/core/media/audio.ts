@@ -12,6 +12,7 @@ import { clamp01 } from "../utils/numbers.ts";
 import { t } from "../../i18n/index.ts";
 import { mediaType } from "./mime.ts";
 import { TimeStretchStretcher } from "./timeStretch.ts";
+import { totalOutputLatency } from "./outputLatency.ts";
 import { rampGain } from "./gainRamp.ts";
 import { toArrayBuffer, toBlobPart } from "../utils/bytes.ts";
 import {
@@ -338,19 +339,69 @@ export class AudioTransport {
   }
 
   /**
-   * Output latency of the current audio context in seconds.
+   * Time between a sample entering the graph and the device emitting it.
    *
-   * The context clock runs ahead of what the speakers have emitted. Visuals use
-   * this value; hit-sound scheduling keeps the raw processing clock so audio
-   * events stay aligned with the music graph.
+   * The chain has two stages that add up: `baseLatency` covers the render
+   * quantum and the graph, and `outputLatency` covers the device buffer after
+   * it. Reading only one of them leaves the visual clock ahead of the sound by
+   * the other, which reads as the audio arriving late. Visuals subtract this
+   * value; hit-sound scheduling keeps the raw processing clock so audio events
+   * stay aligned with the music graph.
    */
   get outputLatency(): number {
     const context = this.context;
     if (!context) {
       return 0;
     }
-    const value = Number(context.outputLatency ?? context.baseLatency ?? 0);
-    return Number.isFinite(value) ? Math.max(0, Math.min(value, 0.1)) : 0;
+    return totalOutputLatency(context);
+  }
+
+  /**
+   * Snapshot of the device latency terms the visual clock depends on.
+   *
+   * `drainedSeconds` is the measured distance between the processing clock and
+   * the audio the device has actually emitted, read from `getOutputTimestamp`.
+   * Comparing it with `outputLatency` shows whether the value subtracted from
+   * the visual clock matches the real output chain. `null` means the host does
+   * not report a device timestamp yet.
+   */
+  get latencyReport(): {
+    readonly baseLatency: number;
+    readonly outputLatency: number;
+    readonly drainedSeconds: number | null;
+    readonly rate: number;
+    readonly usingStretcher: boolean;
+    readonly playing: boolean;
+  } {
+    const context = this.context;
+    if (!context) {
+      return {
+        baseLatency: 0,
+        outputLatency: 0,
+        drainedSeconds: null,
+        rate: this.rate,
+        usingStretcher: this.usesStretcher,
+        playing: this.playing,
+      };
+    }
+    let drainedSeconds: number | null = null;
+    try {
+      const stamp = context.getOutputTimestamp();
+      const emitted = stamp.contextTime;
+      if (typeof emitted === "number" && Number.isFinite(emitted) && emitted > 0) {
+        drainedSeconds = context.currentTime - emitted;
+      }
+    } catch {
+      drainedSeconds = null;
+    }
+    return {
+      baseLatency: Number(context.baseLatency ?? 0),
+      outputLatency: this.outputLatency,
+      drainedSeconds,
+      rate: this.rate,
+      usingStretcher: this.usesStretcher,
+      playing: this.playing,
+    };
   }
 
   /** The audio graph's processing clock, used when scheduling more audio. */

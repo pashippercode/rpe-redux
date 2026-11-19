@@ -458,7 +458,6 @@ export function createEditorAssembly(
   scope.add(
     bindAnalysisActions({
       audioAnalysis,
-      offsetSeconds,
       reportError,
     }),
   );
@@ -1211,7 +1210,6 @@ export function createEditorAssembly(
       trajectoryPanel,
       audioAnalysis,
       realtimePreview,
-      offsetSeconds,
       updateLineInfo,
       completeFirstRender: frameRuntime.completeFirstRender,
       authoringRegionVisible: () => showsAuthoringRegion(getEditorRegionSnapshot()),

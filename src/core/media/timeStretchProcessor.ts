@@ -17,7 +17,6 @@ declare abstract class AudioWorkletProcessor {
 
 declare function registerProcessor(name: string, processor: new () => AudioWorkletProcessor): void;
 
-const STOP_FADE_SECONDS = 0.008;
 const DEFAULT_CROSSFADE_SECONDS = 0.008;
 
 interface LoadMessage {
@@ -39,12 +38,11 @@ interface StartMessage {
 
 interface StopMessage {
   type: "stop";
-  fadeSeconds: number;
 }
 
 type ProcessorMessage = LoadMessage | StartMessage | StopMessage;
 
-/** Worklet processor that owns one TimeStretch and its fade/start state. */
+/** Worklet processor that owns one TimeStretch and its restart crossfade state. */
 class RpeTimeStretchProcessor extends AudioWorkletProcessor {
   private channels: Float32Array[] | null = null;
   private transients: Int32Array | null = null;
@@ -54,9 +52,6 @@ class RpeTimeStretchProcessor extends AudioWorkletProcessor {
   private previousFadeRemaining = 0;
   private previousFadeTotal = 1;
   private startAt = Infinity;
-  private stopping = false;
-  private fadeRemaining = 0;
-  private fadeTotal = 1;
 
   /** Wire the port so the main thread can load, start, and stop the stretcher. */
   constructor() {
@@ -79,13 +74,11 @@ class RpeTimeStretchProcessor extends AudioWorkletProcessor {
         this.beginStart(message);
         break;
       case "stop":
+        // Halt on the next render quantum. Pausing is a hard stop: any fade
+        // would keep sounding after the user pressed the key.
         this.previous = null;
-        if (!this.stretcher) {
-          return;
-        }
-        this.stopping = true;
-        this.fadeRemaining = Math.max(1, Math.round(STOP_FADE_SECONDS * sampleRate));
-        this.fadeTotal = this.fadeRemaining;
+        this.stretcher = null;
+        this.startAt = Infinity;
         break;
       default:
         break;
@@ -113,11 +106,9 @@ class RpeTimeStretchProcessor extends AudioWorkletProcessor {
     this.previousFadeTotal = this.previousFadeRemaining || 1;
     this.stretcher = next;
     this.startAt = Math.max(message.startAt, currentTime);
-    this.stopping = false;
-    this.fadeRemaining = 0;
   }
 
-  /** Render one quantum, honoring the start delay, crossfade, and stop fade. */
+  /** Render one quantum, honoring the start delay and restart crossfade. */
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const output = outputs[0];
     if (!output || output.length === 0) {
@@ -176,19 +167,6 @@ class RpeTimeStretchProcessor extends AudioWorkletProcessor {
       }
     }
 
-    if (this.stopping) {
-      for (let index = 0; index < frames; index += 1) {
-        const gain = this.fadeRemaining > 0 ? this.fadeRemaining / this.fadeTotal : 0;
-        for (const channel of output) {
-          channel[index] *= gain;
-        }
-        this.fadeRemaining -= 1;
-      }
-      if (this.fadeRemaining <= 0) {
-        this.stretcher = null;
-        this.stopping = false;
-      }
-    }
     return true;
   }
 }

@@ -510,7 +510,9 @@ export class HitSounds {
       } else {
         const generation = this.generation;
         this.loadSound(entry.sound).then((loaded) => {
-          if (generation === this.generation) {
+          // A stop that lands while the sound is still decoding must win: the
+          // transport is no longer playing, so this voice is stale.
+          if (generation === this.generation && this.transport.playing) {
             this.playEntry(entry, loaded);
           }
         });
