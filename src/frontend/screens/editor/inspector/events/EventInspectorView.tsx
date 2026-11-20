@@ -448,9 +448,9 @@ export function EventInspectorView({
         <Button
           type="button"
           variant="outlined"
-          onClick={() => runEventTool(session, tempo, "stick", notify, currentBeat())}
+          onClick={() => runEventTool(session, tempo, "stickNext", notify, currentBeat())}
         >
-          {t("editorPanels.inspector.event.stickPrevious")}
+          {t("editorPanels.inspector.event.stickNext")}
         </Button>
         <Button
           ref={setCutAnchorElement}
