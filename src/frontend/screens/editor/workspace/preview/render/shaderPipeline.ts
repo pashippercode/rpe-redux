@@ -910,6 +910,24 @@ export class ShaderPipeline {
     }
   }
 
+  /**
+   * Reset one attribute's instancing divisor for a non-instanced quad draw.
+   *
+   * The preview's shared GL context also hosts instanced batches that leave a
+   * divisor on their attribute slots. A divisor left on a slot this pipeline
+   * reuses makes `drawArrays` read one vertex for every fragment, so the tex
+   * coordinate collapses to that vertex and the pass samples a single texel.
+   */
+  private clearAttributeDivisor(location: number): void {
+    const gl = this.context() as WebGL2RenderingContext;
+    if (typeof gl.vertexAttribDivisor !== "function") {
+      return;
+    }
+    if (gl.getVertexAttrib(location, gl.VERTEX_ATTRIB_ARRAY_DIVISOR) !== 0) {
+      gl.vertexAttribDivisor(location, 0);
+    }
+  }
+
   /** Draws one full-screen quad through `result` into `framebuffer`. */
   private drawCompositeQuad(
     sourceTexture: WebGLTexture,
@@ -931,10 +949,12 @@ export class ShaderPipeline {
     if (this.compositePosition >= 0) {
       gl.enableVertexAttribArray(this.compositePosition);
       gl.vertexAttribPointer(this.compositePosition, 2, gl.FLOAT, false, 16, 0);
+      this.clearAttributeDivisor(this.compositePosition);
     }
     if (this.compositeTexCoord >= 0) {
       gl.enableVertexAttribArray(this.compositeTexCoord);
       gl.vertexAttribPointer(this.compositeTexCoord, 2, gl.FLOAT, false, 16, 8);
+      this.clearAttributeDivisor(this.compositeTexCoord);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
@@ -973,10 +993,12 @@ export class ShaderPipeline {
     if (position >= 0) {
       gl.enableVertexAttribArray(position);
       gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 16, 0);
+      this.clearAttributeDivisor(position);
     }
     if (texCoord >= 0) {
       gl.enableVertexAttribArray(texCoord);
       gl.vertexAttribPointer(texCoord, 2, gl.FLOAT, false, 16, 8);
+      this.clearAttributeDivisor(texCoord);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, inputTexture);
