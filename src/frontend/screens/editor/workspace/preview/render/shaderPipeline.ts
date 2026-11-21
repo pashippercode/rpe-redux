@@ -755,36 +755,40 @@ export class ShaderPipeline {
       return false;
     }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    if (sourceCanvas.width === width && sourceCanvas.height === height) {
-      // Storage is allocated once when the render target changes size. Updating
-      // an existing store avoids a per-frame texImage2D reallocation on the
-      // Canvas2D -> WebGL upload path.
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      if (sourceCanvas.width === width && sourceCanvas.height === height) {
+        // Storage is allocated once when the render target changes size. Updating
+        // an existing store avoids a per-frame texImage2D reallocation on the
+        // Canvas2D -> WebGL upload path.
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+        return true;
+      }
+      let staging = this.sourceStaging ?? null;
+      if (!staging) {
+        staging = document.createElement("canvas");
+        this.sourceStaging = staging;
+      }
+      if (staging.width !== width || staging.height !== height) {
+        staging.width = width;
+        staging.height = height;
+      }
+      let stagingContext = this.sourceStagingContext ?? null;
+      if (!stagingContext) {
+        stagingContext = staging.getContext("2d");
+        this.sourceStagingContext = stagingContext;
+      }
+      if (!stagingContext) {
+        return false;
+      }
+      // The source draw covers the entire staging surface, including transparent
+      // pixels, so clearing it first would be a redundant full-canvas pass.
+      stagingContext.drawImage(sourceCanvas, 0, 0, width, height);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, staging);
       return true;
+    } finally {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     }
-    let staging = this.sourceStaging ?? null;
-    if (!staging) {
-      staging = document.createElement("canvas");
-      this.sourceStaging = staging;
-    }
-    if (staging.width !== width || staging.height !== height) {
-      staging.width = width;
-      staging.height = height;
-    }
-    let stagingContext = this.sourceStagingContext ?? null;
-    if (!stagingContext) {
-      stagingContext = staging.getContext("2d");
-      this.sourceStagingContext = stagingContext;
-    }
-    if (!stagingContext) {
-      return false;
-    }
-    // The source draw covers the entire staging surface, including transparent
-    // pixels, so clearing it first would be a redundant full-canvas pass.
-    stagingContext.drawImage(sourceCanvas, 0, 0, width, height);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, staging);
-    return true;
   }
 
   /** Upload the primary source without compositing another Canvas2D layer. */

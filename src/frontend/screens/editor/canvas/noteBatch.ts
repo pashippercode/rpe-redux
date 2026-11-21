@@ -1206,6 +1206,7 @@ export class NoteBatch {
     }
     this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
     configureTextureSampling(this.gl);
+    this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false);
     this.gl.pixelStorei(this.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
     this.gl.texImage2D(
       this.gl.TEXTURE_2D,

@@ -18,6 +18,7 @@ import type {
 } from "../../../../../../core/edit/document/changeCoordinator.ts";
 import { extensionRegistry } from "../../../../../../core/extensions/runtime.ts";
 import { t } from "../../../../../../i18n/index.ts";
+import { bindCurrentDocumentAssets } from "../../../../../platform/documentStoreHandle.ts";
 import type { DocumentLeaseHandle } from "../open/documentLease.ts";
 import { createExternalResourceOpenSession } from "../open/externalResourceOpen.ts";
 import type { DocumentLoadReason } from "./service.ts";
@@ -141,6 +142,7 @@ export function createQueuedCandidateLoader(options: QueuedCandidateLoaderOption
           throw new Error(t("workspace.document.error.openCancelled"));
         }
       }
+      bindCurrentDocumentAssets(assets);
       await options.loadCandidateResources(candidate, assets, task);
       const fingerprintStarted = performance.now();
       const fingerprint = options.awaitFingerprint

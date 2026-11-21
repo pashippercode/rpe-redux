@@ -6,7 +6,16 @@
  */
 import { assetUrl } from "../../core/platform/assetUrl.ts";
 import { assetPath } from "../../core/global/document/resources.ts";
-import { currentDocumentStore } from "./documentStoreHandle.ts";
+import type { ReadableDocumentAssets } from "./documentStoreHandle.ts";
+import { currentDocumentAssets, currentDocumentStore } from "./documentStoreHandle.ts";
+
+function readDocumentAssets(): ReadableDocumentAssets | null {
+  const stored = currentDocumentStore()?.assets as ReadableDocumentAssets | undefined;
+  if (stored && stored.size > 0) {
+    return stored;
+  }
+  return currentDocumentAssets() ?? stored ?? null;
+}
 
 /**
  * Reads one shader's GLSL out of the packaged assets.
@@ -16,12 +25,12 @@ import { currentDocumentStore } from "./documentStoreHandle.ts";
  */
 export async function readShaderSource(path: string, chartName = ""): Promise<string | null> {
   if (!path.startsWith("redux/")) {
-    const assets = currentDocumentStore()?.assets;
+    const assets = readDocumentAssets();
     const index = assets
-      ? Object.assign(new Map(assets.assets), { names: () => assets.names })
+      ? Object.assign(new Map(assets), { names: () => assets.names?.() ?? assets.keys() })
       : null;
     const resolved = index ? (assetPath(index, path, chartName) ?? path) : path;
-    const bytes = await assets?.read(resolved);
+    const bytes = await assets?.read?.(resolved);
     return bytes ? new TextDecoder().decode(bytes) : null;
   }
   const response = await fetch(assetUrl(path));
