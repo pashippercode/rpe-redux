@@ -40,7 +40,7 @@ test("the pin manifest covers every supported desktop target", () => {
 });
 
 test("pins select the exact artifact for each supported target", () => {
-  assert.equal(selectFfmpegPin(pins, "windows", "x64").version, "8.1.2");
+  assert.equal(selectFfmpegPin(pins, "windows", "x64").version, "8.1.3");
   assert.equal(selectFfmpegPin(pins, "windows", "x86").version, "8.1.3");
   assert.equal(selectFfmpegPin(pins, "linux", "x64").version, "8.1.3");
   assert.equal(
