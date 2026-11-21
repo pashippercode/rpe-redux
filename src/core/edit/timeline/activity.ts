@@ -12,6 +12,7 @@ import type { TempoSource } from "../../global/chart/timing/events.ts";
 import { IntervalIndex } from "../../utils/intervalIndex.ts";
 import { shaderEvents } from "../../global/chart/shader/shaderEvents.ts";
 import type { ShaderChartEvent } from "../../global/chart/shader/shaderEvents.ts";
+import { registeredChartDocument } from "../../global/chart/streaming/chartDocumentRegistry.ts";
 
 const SPECIAL_ACTIVITY_TRACKS = [
   "scaleXEvents",
@@ -80,6 +81,8 @@ export interface ActivityLine {
   activity: LineActivity;
   shaderTimes: number[];
   shaderIndex: IntervalIndex<ShaderChartEvent>;
+  /** Latest note, event, or shader time on the line. */
+  duration: number;
 }
 
 /** A layer-density histogram; `key` enables reuse across frames. */
@@ -94,6 +97,25 @@ export interface ActivityDensity {
 /** The state of a layer in the current viewport. */
 export type LayerState = "empty" | "visible" | "outside";
 
+/** Build one line's activity and shader directory without touching shared state. */
+function activityLine(
+  chart: Chart,
+  line: JudgeLine,
+  tempo: TempoSource,
+  index: number,
+): ActivityLine {
+  const activity = new LineActivity(line, tempo);
+  const effects = shaderEvents(chart, index);
+  let duration = activity.duration;
+  const factor = line.bpmfactor ?? 1;
+  const shaderTimes = effects.map((event) => {
+    const start = tempo.seconds(event.startTime, factor);
+    duration = Math.max(duration, start, tempo.seconds(event.endTime, factor));
+    return start;
+  });
+  return { activity, shaderTimes, shaderIndex: trackIndex(effects), duration };
+}
+
 /** Compiles per-line activity for a chart and answers viewport queries over it. */
 export class TimelineActivity {
   declare cache: WeakMap<JudgeLine, LineActivity>;
@@ -102,45 +124,89 @@ export class TimelineActivity {
   declare densityCache: ActivityDensity | null;
   declare duration: number;
   declare lines: ActivityLine[];
+  /** Source line snapshot the compiled entries were built from. */
+  declare lineSnapshot: JudgeLine[];
+  /** Paged document revision, which changes when one line materializes. */
+  declare revision: number | null;
 
   /** Starts with an empty line cache. */
   constructor() {
     this.cache = new WeakMap();
+    this.lines = [];
+    this.lineSnapshot = [];
+    this.revision = null;
+    this.duration = 1;
   }
 
-  /** Rebuilds line activity when the chart or tempo object changes. */
+  /**
+   * Rebuild line activity when the chart, tempo, or paged line graph changes.
+   *
+   * A paged document keeps one facade chart object and mutates only the line it
+   * materialized. Comparing the document revision lets the patch path refresh
+   * just that entry instead of rebuilding the whole overview strip.
+   */
   compile(chart: Chart, tempo: TempoSource): void {
-    if (this.chart === chart && this.tempo === tempo) {
+    const document = registeredChartDocument(chart);
+    const revision = document?.contentRevision ?? null;
+    if (this.chart === chart && this.tempo === tempo && this.revision === revision) {
       return;
     }
-    if (this.tempo !== tempo) {
+    const tempoChanged = this.tempo !== tempo;
+    const sourceLines = chart.judgeLineList ?? [];
+    const canPatch =
+      !tempoChanged &&
+      this.chart === chart &&
+      this.lines.length === sourceLines.length &&
+      this.lineSnapshot.length === sourceLines.length;
+    if (tempoChanged) {
       this.cache = new WeakMap();
     }
     this.chart = chart;
     this.tempo = tempo;
+    this.revision = revision;
     this.densityCache = null;
-    this.duration = 1;
-    // `judgeLineList` is optional, so a chart with no lines contributes no
-    // activity.
-    this.lines = (chart.judgeLineList ?? []).map((line, index) => {
-      let activity = this.cache.get(line);
-      if (!activity) {
-        activity = new LineActivity(line, tempo);
-        this.cache.set(line, activity);
+    if (canPatch) {
+      for (let index = 0; index < sourceLines.length; index += 1) {
+        const line = sourceLines[index];
+        if (line === this.lineSnapshot[index]) {
+          continue;
+        }
+        this.lines[index] = activityLine(chart, line, tempo, index);
       }
-      const effects = shaderEvents(chart, index);
-      const shaderTimes = effects.map((event) => {
-        const start = tempo.seconds(event.startTime, line.bpmfactor ?? 1);
-        this.duration = Math.max(
-          this.duration,
-          start,
-          tempo.seconds(event.endTime, line.bpmfactor ?? 1),
-        );
-        return start;
+      this.lineSnapshot = [...sourceLines];
+    } else {
+      this.lineSnapshot = [...sourceLines];
+      this.lines = sourceLines.map((line, index) => {
+        const activity = this.cache.get(line);
+        if (!activity) {
+          const built = activityLine(chart, line, tempo, index);
+          this.cache.set(line, built.activity);
+          return built;
+        }
+        const effects = shaderEvents(chart, index);
+        let duration = activity.duration;
+        const factor = line.bpmfactor ?? 1;
+        const shaderTimes = effects.map((event) => {
+          const start = tempo.seconds(event.startTime, factor);
+          duration = Math.max(duration, start, tempo.seconds(event.endTime, factor));
+          return start;
+        });
+        return { activity, shaderTimes, shaderIndex: trackIndex(effects), duration };
       });
-      this.duration = Math.max(this.duration, activity.duration);
-      return { activity, shaderTimes, shaderIndex: trackIndex(effects) };
-    });
+    }
+    let duration = 1;
+    for (const line of this.lines) {
+      duration = Math.max(duration, line.duration);
+    }
+    // An unloaded line has no activity yet, but its index summary already knows
+    // where it ends. The overview must not shrink to the loaded prefix while
+    // the scheduler fills the rest.
+    for (const summary of document?.index?.lines ?? []) {
+      if (summary.endSeconds !== null) {
+        duration = Math.max(duration, summary.endSeconds);
+      }
+    }
+    this.duration = duration;
   }
 
   /** Builds or reuses the note and event histogram for one timeline strip. */

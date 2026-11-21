@@ -12,6 +12,7 @@ export type ChartWorkerRequest =
   | { readonly id: number; readonly kind: "append"; readonly chunk: ArrayBuffer }
   | { readonly id: number; readonly kind: "finish" }
   | { readonly id: number; readonly kind: "fingerprints" }
+  | { readonly id: number; readonly kind: "fingerprint-next" }
   | { readonly id: number; readonly kind: "line"; readonly index: number }
   | { readonly id: number; readonly kind: "close" };
 
@@ -24,6 +25,13 @@ export type ChartWorkerResponse =
       readonly kind: "fingerprints";
       readonly start: number;
       readonly seeds: readonly ChartLineRevisionSeed[];
+    }
+  | {
+      readonly id: number;
+      readonly kind: "fingerprint-lines";
+      readonly start: number;
+      /** Raw line sources; null means the index has no range for that slot. */
+      readonly raws: readonly (string | null)[];
     }
   | { readonly id: number; readonly kind: "fingerprints-done" }
   | {

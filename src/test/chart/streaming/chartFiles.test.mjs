@@ -39,6 +39,8 @@ test("single JSON file reaches loadCandidate with a streaming document", async (
       try {
         assert.ok(task);
         assert.ok(candidate.chartDocument);
+        candidate.chartDocument.startFingerprintHydration?.();
+        await candidate.chartDocument.whenFingerprintReady();
         const materialized = await candidate.chartDocument.materializeAll();
         assert.equal(chartFingerprint(materialized), expected);
         task.complete();

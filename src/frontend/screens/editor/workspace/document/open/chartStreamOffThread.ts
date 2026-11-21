@@ -25,6 +25,127 @@ import { TempoMap } from "../../../../../../core/global/chart/timing/tempo.ts";
 import { lineRevisionSeedFromJson } from "../../../../../../core/global/chart/chartContentHash.ts";
 import { yieldToHost } from "../../../../../../core/utils/yieldToHost.ts";
 import type { ChartLineRevisionSeed } from "../../../../../../core/global/chart/chartRevisionSeed.ts";
+import type {
+  ChartFingerprintWorkerRequest,
+  ChartFingerprintWorkerResponse,
+} from "../../../../../../core/global/chart/streaming/chartFingerprintWorkerProtocol.ts";
+
+/** One idle-or-busy fingerprint worker and the line it is hashing. */
+interface FingerprintPoolJob {
+  readonly index: number;
+  readonly raw: string;
+  resolve(seed: ChartLineRevisionSeed): void;
+  reject(error: unknown): void;
+}
+
+/** Worker count for hashing: leave the UI thread and stream worker a core. */
+function fingerprintWorkerCount(): number {
+  const cores =
+    typeof navigator === "undefined" ? 4 : Math.max(1, navigator.hardwareConcurrency || 4);
+  return Math.max(1, Math.min(4, cores - 1));
+}
+
+/**
+ * A small pool that hashes raw lines away from both the stream worker and the
+ * UI thread.
+ *
+ * The stream worker serves slices; this pool turns those slices into semantic
+ * seeds. Hashing one 15k-event line costs about a hundred milliseconds, so the
+ * pool keeps the line reader responsive instead of serializing the digest pass
+ * behind it.
+ */
+class ChartFingerprintPool {
+  private readonly workers: Worker[] = [];
+  private readonly idle: Worker[] = [];
+  private readonly active = new Map<Worker, FingerprintPoolJob>();
+  private readonly queue: FingerprintPoolJob[] = [];
+  private disposed = false;
+
+  /** Start up to `count` workers; a failed construction leaves the rest usable. */
+  constructor(count: number) {
+    for (let index = 0; index < count; index += 1) {
+      let worker: Worker;
+      try {
+        worker = new Worker(new URL("./chartFingerprintWorker.ts", import.meta.url), {
+          type: "module",
+        });
+      } catch {
+        break;
+      }
+      worker.onmessage = (event: MessageEvent<ChartFingerprintWorkerResponse>) => {
+        const job = this.active.get(worker);
+        this.active.delete(worker);
+        this.idle.push(worker);
+        job?.resolve(event.data.seed);
+        this.dispatch();
+      };
+      worker.onerror = (event) => {
+        const job = this.active.get(worker);
+        this.active.delete(worker);
+        const workerIndex = this.workers.indexOf(worker);
+        if (workerIndex >= 0) {
+          this.workers.splice(workerIndex, 1);
+        }
+        const idleIndex = this.idle.indexOf(worker);
+        if (idleIndex >= 0) {
+          this.idle.splice(idleIndex, 1);
+        }
+        worker.terminate();
+        job?.reject(event.error instanceof Error ? event.error : new Error(String(event.message)));
+        if (!this.workers.length) {
+          // The remaining queued lines fall back to the UI thread instead of
+          // waiting forever for a worker that no longer exists.
+          for (const queued of this.queue.splice(0)) {
+            queued.reject(new Error("No chart fingerprint workers remain"));
+          }
+        }
+        this.dispatch();
+      };
+      this.workers.push(worker);
+      this.idle.push(worker);
+    }
+  }
+
+  /** Hash one raw line, or fall back to the UI thread when no worker exists. */
+  submit(index: number, raw: string): Promise<ChartLineRevisionSeed> {
+    if (this.disposed) {
+      return Promise.reject(new Error("Chart fingerprint pool is disposed"));
+    }
+    if (!this.workers.length) {
+      return Promise.resolve(lineRevisionSeedFromJson(raw));
+    }
+    return new Promise<ChartLineRevisionSeed>((resolve, reject) => {
+      this.queue.push({ index, raw, resolve, reject });
+      this.dispatch();
+    });
+  }
+
+  /** Terminate every worker and drop queued jobs. */
+  dispose(): void {
+    this.disposed = true;
+    for (const worker of this.workers) {
+      worker.terminate();
+    }
+    this.workers.length = 0;
+    this.idle.length = 0;
+    this.active.clear();
+    this.queue.length = 0;
+  }
+
+  /** Feed idle workers until the queue drains. */
+  private dispatch(): void {
+    while (!this.disposed && this.idle.length && this.queue.length) {
+      const worker = this.idle.pop();
+      const job = this.queue.shift();
+      if (!worker || !job) {
+        return;
+      }
+      this.active.set(worker, job);
+      const request: ChartFingerprintWorkerRequest = { index: job.index, raw: job.raw };
+      worker.postMessage(request);
+    }
+  }
+}
 
 /** An opened stream document plus the worker lifetime it depends on. */
 export interface OpenedChartStream {
@@ -147,7 +268,14 @@ function localDocument(bytes: ArrayBuffer): OpenedChartStream {
     maxCachedLines: PAGED_DOCUMENT_MAX_LINES,
     maxCachedBytes: PAGED_DOCUMENT_MAX_BYTES,
   });
-  void hydrateLocalFingerprints(document, scan);
+  let hydrationStarted = false;
+  document.startFingerprintHydration = () => {
+    if (hydrationStarted) {
+      return;
+    }
+    hydrationStarted = true;
+    void hydrateLocalFingerprints(document, scan);
+  };
   return {
     document,
     dispose() {},
@@ -225,17 +353,59 @@ export async function openChartStreamFromChunks(
   let provider: WorkerChartLineProvider | null = null;
   let chartDocument: ChartDocument | null = null;
   let fingerprintsDone = false;
-  const pendingFingerprintBatches: Array<{
-    start: number;
-    seeds: readonly ChartLineRevisionSeed[];
-  }> = [];
-  /** Install one worker seed batch on the document that owns the line slots. */
-  const applySeeds = (
-    document: ChartDocument,
-    start: number,
-    seeds: readonly ChartLineRevisionSeed[],
-  ): void => {
-    seeds.forEach((seed, offset) => document.applyFingerprintSeed(start + offset, seed));
+  let pendingFingerprintJobs = 0;
+  let fingerprintBatchOpen = false;
+  const fingerprintWorkers = fingerprintWorkerCount();
+  const maxPendingFingerprintJobs = Math.max(4, fingerprintWorkers * 2);
+  const pendingFingerprintSeeds: Array<{ index: number; seed: ChartLineRevisionSeed }> = [];
+  const fingerprintPool = new ChartFingerprintPool(fingerprintWorkers);
+  /** Apply one semantic seed now, or buffer it until the document exists. */
+  const applySeed = (index: number, seed: ChartLineRevisionSeed): void => {
+    if (chartDocument) {
+      chartDocument.applyFingerprintSeed(index, seed);
+    } else {
+      pendingFingerprintSeeds.push({ index, seed });
+    }
+  };
+  /** Install one already-computed seed batch. */
+  const applySeedBatch = (start: number, seeds: readonly ChartLineRevisionSeed[]): void => {
+    seeds.forEach((seed, offset) => applySeed(start + offset, seed));
+  };
+  /** Complete hydration only after every hash and the producer's end marker. */
+  const settleFingerprintHydration = (): void => {
+    if (!fingerprintsDone || pendingFingerprintJobs > 0 || !chartDocument) {
+      return;
+    }
+    chartDocument.completeFingerprintHydration();
+  };
+  /**
+   * Release the stream worker for the next batch while the pool still has room.
+   *
+   * Dense batches are one line each, so acknowledging only after every hash
+   * would leave the pool nearly idle. The pending-job window keeps several
+   * lines in flight without copying an unbounded source tail into memory.
+   */
+  const acknowledgeFingerprintBatch = (): void => {
+    if (!fingerprintBatchOpen || pendingFingerprintJobs >= maxPendingFingerprintJobs) {
+      return;
+    }
+    fingerprintBatchOpen = false;
+    worker.postMessage({ id: sessionId, kind: "fingerprint-next" });
+  };
+  /** Hash one raw line off-thread and apply its seed when it returns. */
+  const queueFingerprint = (index: number, raw: string): void => {
+    pendingFingerprintJobs += 1;
+    fingerprintPool
+      .submit(index, raw)
+      .then(
+        (seed) => applySeed(index, seed),
+        () => applySeed(index, lineRevisionSeedFromJson(raw)),
+      )
+      .finally(() => {
+        pendingFingerprintJobs -= 1;
+        settleFingerprintHydration();
+        acknowledgeFingerprintBatch();
+      });
   };
   let settleOpen: { resolve(): void; reject(error: unknown): void } | null = null;
   const opened = new Promise<void>((resolve, reject) => {
@@ -262,16 +432,22 @@ export async function openChartStreamFromChunks(
       return;
     }
     if (message.kind === "fingerprints") {
-      if (chartDocument) {
-        applySeeds(chartDocument, message.start, message.seeds);
-      } else {
-        pendingFingerprintBatches.push({ start: message.start, seeds: message.seeds });
-      }
+      applySeedBatch(message.start, message.seeds);
+      return;
+    }
+    if (message.kind === "fingerprint-lines") {
+      fingerprintBatchOpen = true;
+      message.raws.forEach((raw, offset) => {
+        if (raw !== null) {
+          queueFingerprint(message.start + offset, raw);
+        }
+      });
+      acknowledgeFingerprintBatch();
       return;
     }
     if (message.kind === "fingerprints-done") {
       fingerprintsDone = true;
-      chartDocument?.completeFingerprintHydration();
+      settleFingerprintHydration();
       return;
     }
     if (message.kind === "line") {
@@ -279,12 +455,14 @@ export async function openChartStreamFromChunks(
       return;
     }
     const error = new Error(message.message || `Chart stream failed for ${name}`);
+    fingerprintPool.dispose();
     provider?.fail(error);
     settleOpen?.reject(error);
     settleOpen = null;
   };
   worker.onerror = (event) => {
     const error = event.error instanceof Error ? event.error : new Error(String(event.message));
+    fingerprintPool.dispose();
     provider?.fail(error);
     settleOpen?.reject(error);
     settleOpen = null;
@@ -305,10 +483,12 @@ export async function openChartStreamFromChunks(
     worker.postMessage({ id: sessionId, kind: "finish" });
     await opened;
   } catch (error) {
+    fingerprintPool.dispose();
     worker.terminate();
     throw error;
   }
   if (!header || !index || !provider) {
+    fingerprintPool.dispose();
     worker.terminate();
     throw new Error(`Chart stream did not produce a header for ${name}`);
   }
@@ -319,22 +499,29 @@ export async function openChartStreamFromChunks(
     maxCachedLines: PAGED_DOCUMENT_MAX_LINES,
     maxCachedBytes: PAGED_DOCUMENT_MAX_BYTES,
   });
+  let fingerprintsRequested = false;
+  // The opener starts the digest pool after the paged document is installed and
+  // before textures and audio. The load still waits for it before the first
+  // frame, so a partially hashed chart never opens read-only.
+  document.startFingerprintHydration = () => {
+    if (fingerprintsRequested) {
+      return;
+    }
+    fingerprintsRequested = true;
+    worker.postMessage({ id: sessionId, kind: "fingerprints" });
+  };
   chartDocument = document;
-  for (const batch of pendingFingerprintBatches) {
-    applySeeds(document, batch.start, batch.seeds);
+  for (const pending of pendingFingerprintSeeds) {
+    document.applyFingerprintSeed(pending.index, pending.seed);
   }
-  if (fingerprintsDone) {
-    document.completeFingerprintHydration();
-  }
+  pendingFingerprintSeeds.length = 0;
+  settleFingerprintHydration();
   const dispose = () => {
+    fingerprintPool.dispose();
     provider?.close();
     worker.postMessage({ id: sessionId, kind: "close" });
     worker.terminate();
   };
   document.dispose = dispose;
-  // Let initial materialization request its lines before the worker spends CPU
-  // on the semantic fingerprint pass. The pass remains asynchronous and still
-  // completes before any save/conflict decision consumes the document.
-  worker.postMessage({ id: sessionId, kind: "fingerprints" });
   return { document, dispose };
 }

@@ -123,6 +123,21 @@ test("completion times are per-line sorted and merged without re-reading unchang
   );
 });
 
+test("completion times catch up when a paged line runtime appears", () => {
+  const cache = new CompletionTimesCache();
+  const tempo = {};
+  const note = {};
+  const source = [note];
+  const runtime = { notes: [{ note: { type: 1, isFake: 0 }, start: 2, end: 2 }] };
+
+  assert.deepEqual(cache.update([undefined], [source], tempo), []);
+  assert.deepEqual(
+    cache.update([runtime], [source], tempo),
+    [2],
+    "the same note array gains a runtime after a partial page compile",
+  );
+});
+
 test("history revision changes only when the read model changes", () => {
   const history = new History(createChart());
   const initial = history.revision;

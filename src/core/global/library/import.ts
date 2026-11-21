@@ -17,13 +17,15 @@ import type { LibraryViewState } from "./types.ts";
 import { throwIfAborted } from "../../utils/abort.ts";
 
 /** Keep ordinary JSON requests below the sidecar's 64 MiB request cap. */
-const STREAMED_IMPORT_THRESHOLD_BYTES = 48 * 1024 * 1024;
+const STREAMED_IMPORT_THRESHOLD_BYTES = 16 * 1024 * 1024;
 /** Reduce upload request overhead while keeping each raw chunk comfortably bounded. */
 const IMPORT_CHUNK_CHARS = 4 * 1024 * 1024;
 
 interface SerializedImportChart {
   readonly chartJson: string;
   readonly chartChunks?: AsyncIterable<string>;
+  /** Approximate serialized size, used for chunk-write progress. */
+  readonly estimatedBytes?: number;
 }
 
 /** Input for importing an opened document into the library. */
@@ -140,7 +142,8 @@ async function serializeImportedChart(chart: unknown): Promise<SerializedImportC
     const indexedDocument = document as unknown as {
       readonly index?: { readonly lines?: readonly { readonly byteLength?: number }[] } | null;
     };
-    if (estimatedDocumentBytes(indexedDocument) > STREAMED_IMPORT_THRESHOLD_BYTES) {
+    const estimatedBytes = estimatedDocumentBytes(indexedDocument);
+    if (estimatedBytes > STREAMED_IMPORT_THRESHOLD_BYTES) {
       return {
         chartJson: "{}",
         chartChunks: coalesceSerializedChunks(
@@ -148,18 +151,22 @@ async function serializeImportedChart(chart: unknown): Promise<SerializedImportC
             serialize: (sink) => document.serialize!(sink),
           }),
         ),
+        estimatedBytes,
       };
     }
     const chunks: string[] = [];
     await document.serialize((chunk) => {
       chunks.push(chunk);
     });
-    return { chartJson: chunks.join("") };
+    const chartJson = chunks.join("");
+    return { chartJson, estimatedBytes: chartJson.length };
   }
   if (document) {
-    return { chartJson: serializeChart(await document.materializeAll()) };
+    const chartJson = serializeChart(await document.materializeAll());
+    return { chartJson, estimatedBytes: chartJson.length };
   }
-  return { chartJson: serializeChart(chart) };
+  const chartJson = serializeChart(chart);
+  return { chartJson, estimatedBytes: chartJson.length };
 }
 
 /** Split a serialized chart without breaking a UTF-16 surrogate pair. */
@@ -201,6 +208,7 @@ export async function importChartToLibrary(input: LibraryImportInput): Promise<L
     chart: input.chart,
     chartJson,
     ...(chartChunks ? { chartChunks } : {}),
+    ...(serialized.estimatedBytes ? { chartBytes: serialized.estimatedBytes } : {}),
     name: input.name,
     assets,
     ...(input.group ? { group: input.group } : {}),

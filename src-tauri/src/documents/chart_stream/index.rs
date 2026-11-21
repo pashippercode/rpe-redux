@@ -75,6 +75,8 @@ pub(crate) struct ChartLineSummary {
     byte_length: u64,
     note_count: u64,
     event_count: u64,
+    /// Speed events on the line; readers load these before ordinary notes.
+    speed_event_count: u64,
     #[serde(serialize_with = "serialize_optional_js_number")]
     start_seconds: Option<f64>,
     #[serde(serialize_with = "serialize_optional_js_number")]
@@ -368,6 +370,7 @@ fn summarize_line(
             byte_length: byte_length as u64,
             note_count: 0,
             event_count: 0,
+            speed_event_count: 0,
             start_seconds: None,
             end_seconds: None,
             intervals: Vec::new(),
@@ -422,6 +425,7 @@ fn summarize_line(
     }
 
     let mut event_count = 0u64;
+    let mut speed_event_count = 0u64;
     let mut has_shader = false;
     let mut has_alpha_events = false;
     let mut last_alpha_end: Option<f64> = None;
@@ -435,6 +439,9 @@ fn summarize_line(
                 continue;
             };
             event_count += events.len() as u64;
+            if track == "speedEvents" {
+                speed_event_count += events.len() as u64;
+            }
             if track == "paintEvents" && !events.is_empty() {
                 has_shader = true;
             }
@@ -491,6 +498,7 @@ fn summarize_line(
         byte_length: byte_length as u64,
         note_count,
         event_count,
+        speed_event_count,
         start_seconds: if bounds.timed {
             Some(bounds.start.max(0.0))
         } else {
@@ -1143,7 +1151,8 @@ mod tests {
                 {"startTime": [0, 0, 1], "endTime": [1, 0, 1]},
             ],
             "eventLayers": [
-                {"alphaEvents": [{"startTime": [0, 0, 1], "endTime": [2, 0, 1], "end": 0}]},
+                {"alphaEvents": [{"startTime": [0, 0, 1], "endTime": [2, 0, 1], "end": 0}],
+                 "speedEvents": [{"startTime": [0, 0, 1], "endTime": [1, 0, 1], "start": 1, "end": 1}]},
             ],
             "extended": {
                 "paintEvents": [{"startTime": [0, 0, 1], "endTime": [1, 0, 1]}],
@@ -1156,7 +1165,8 @@ mod tests {
         assert_eq!(summary.byte_offset, 10);
         assert_eq!(summary.byte_length, 20);
         assert_eq!(summary.note_count, 1);
-        assert_eq!(summary.event_count, 2);
+        assert_eq!(summary.event_count, 3);
+        assert_eq!(summary.speed_event_count, 1);
         assert_eq!(summary.start_seconds, Some(0.0));
         assert_eq!(summary.end_seconds, Some(1.0));
         assert_eq!(summary.intervals, vec![[0.0, 1.0]]);
@@ -1278,6 +1288,7 @@ mod tests {
             byte_length: 1,
             note_count: 0,
             event_count: 0,
+            speed_event_count: 0,
             start_seconds: Some(1.0),
             end_seconds: None,
             intervals: Vec::new(),

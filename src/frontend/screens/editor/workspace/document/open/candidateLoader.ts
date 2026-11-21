@@ -119,12 +119,16 @@ export interface CandidateLoaderDependencies {
   currentChart: () => Chart;
   currentAssets: () => AssetMap;
   currentChartName: () => string;
+  /** Active line on the installed session, used to seed a paged open. */
+  currentLineIndex: () => number;
   resolveDesktopSong: (song: string, assets: AssetMap, chartName: string) => string | undefined;
   loadMusic: (bytes: Uint8Array | string, name: string, updateMetadata?: boolean) => Promise<void>;
   missingMusic: (name: string) => void;
   selectLine: (index: number) => void;
   invalidate: () => void;
   waitForFirstRender: (task: LoadTask) => Promise<void>;
+  /** Compile the complete preview scene before the first visible frame. */
+  preparePreview?: (task: LoadTask) => Promise<void>;
   reportError?: (error: unknown) => void;
 }
 
@@ -138,20 +142,61 @@ export function createCandidateLoader(deps: CandidateLoaderDependencies) {
     let chartDocumentForSession: ChartDocument | undefined;
     let revisionSeed: ChartRevisionSeed | undefined;
     let diagnostics: NonNullable<EditorCandidate["diagnostics"]> = [];
+    let audioPromise: Promise<void> | null = null;
+    let fingerprintReady: Promise<void> = Promise.resolve();
+    let installed = false;
+    /**
+     * Read the candidate's track into the shared audio host.
+     *
+     * The track does not depend on the installed session, so an open starts it
+     * beside the line materialization instead of leaving the progress bar at
+     * the audio stage after the chart is already parsed.
+     */
+    const loadAudio = (
+      chartForAudio: Chart,
+      assets: AssetMap,
+      chartName: string,
+    ): Promise<void> => {
+      const references = resourceReferences(chartForAudio, assets, chartName, candidate.info);
+      const songPath = references.song
+        ? assetPath(assets, references.song, chartName)
+        : null;
+      const songUri = songPath ? assets.uri?.(songPath) : undefined;
+      return (async () => {
+        const bytes =
+          assetBytes(assets, references.song, chartName) ??
+          (songPath && assets.read ? await assets.read(songPath) : undefined) ??
+          songUri ??
+          (candidate.desktop && references.song
+            ? deps.resolveDesktopSong(references.song, assets, chartName)
+            : undefined);
+        if (!bytes) {
+          if (references.song) {
+            deps.missingMusic(references.song);
+          }
+          return;
+        }
+        const audioStarted = performance.now();
+        await deps.loadMusic(bytes, references.song, false);
+        reportOpenTiming("media.music", performance.now() - audioStarted);
+      })().catch((error) => {
+        deps.reportError?.(error);
+      });
+    };
     if (chartDocument) {
-      // An opened document is not allowed to expose the paged facade. The
-      // editor's scene, timeline, and inspector all retain the chart reference
-      // after replacement, so entering with placeholders would make missing
-      // lines look like corrupt chart data and would page them in during play.
-      // Paging remains available to library/storage seams, but the replacement
-      // boundary always waits for the complete line graph.
+      // The editor only opens once every line is materialized. A paged document
+      // still keeps the index-driven progress totals and the document-backed
+      // fingerprint, but the replacement boundary never exposes placeholders.
       try {
         const started = performance.now();
         const indexedLines = chartDocument.index?.lines ?? [];
         const totalNotes = indexedLines.reduce((total, summary) => total + summary.noteCount, 0);
         const totalEvents = indexedLines.reduce((total, summary) => total + summary.eventCount, 0);
         const totalLines = chartDocument.lineCount;
-        const progressTotal = totalNotes + totalEvents || totalLines;
+        // Every line contributes, whether or not it carries notes or events.
+        // Counting objects alone lets the bar reach 100% while empty or sparse
+        // lines are still being parsed, which looks like a stalled open.
+        const progressTotal = totalNotes + totalEvents + totalLines;
         let lastProgressAt = 0;
         let lastProgressLine = -1;
         const publishMaterializeProgress = (progress: ChartMaterializeProgress) => {
@@ -161,22 +206,39 @@ export function createCandidateLoader(deps: CandidateLoaderDependencies) {
           if (!reachedEnd && !lineChanged && now - lastProgressAt < 32) {
             return;
           }
-          const objectTotal = totalNotes + totalEvents;
-          const completed = objectTotal
-            ? progress.completedNotes + progress.completedEvents
-            : progress.completedLines;
-          const combinedTotal = objectTotal || totalLines;
-          task.update("content", Math.min(completed, combinedTotal), combinedTotal);
+          const completed =
+            progress.completedNotes + progress.completedEvents + progress.completedLines;
+          task.update("content", Math.min(completed, progressTotal), progressTotal);
           lastProgressAt = now;
           lastProgressLine = progress.completedLines;
         };
         task.update("content", 0, progressTotal);
-        await chartDocument.materializeAll({ onProgress: publishMaterializeProgress });
-        reportOpenTiming("chart.materializeAll", performance.now() - started);
-        // Keep the facade as the session chart: materializeAll has installed
-        // every line into it, so no later playback request can page content in.
         chart = chartDocument.chart;
         chartDocumentForSession = chartDocument;
+        // Install before decoding the track: replacement releases the previous
+        // audio owner. The loading surface still covers the editor, and every
+        // line is materialized before the first visible frame.
+        deps.replaceChart(
+          chart,
+          candidate.name,
+          nextAssets,
+          candidate.project?.assetFolders ?? [],
+          false,
+          diagnostics,
+          Boolean(candidate.readOnly || diagnostics.length),
+          chartDocument,
+          revisionSeed,
+        );
+        deps.setLibraryProject(candidate.project ?? null);
+        installed = true;
+        // Audio and the browser digest pool do not depend on materialized
+        // lines, so both run beside the line parse. By the time the content
+        // stage reaches 100%, the track and hashes are normally ready.
+        chartDocument.startFingerprintHydration?.();
+        fingerprintReady = chartDocument.whenFingerprintReady();
+        audioPromise = loadAudio(chart, nextAssets, candidate.name);
+        await chartDocument.materializeAll({ onProgress: publishMaterializeProgress });
+        reportOpenTiming("chart.materializeAll", performance.now() - started);
       } catch (error) {
         candidate.disposeDocument?.();
         throw error;
@@ -223,18 +285,33 @@ export function createCandidateLoader(deps: CandidateLoaderDependencies) {
         `${candidate.name}: ${t("model.chart.invalidDocument")}`,
       );
     }
-    deps.replaceChart(
-      chart,
-      candidate.name,
-      nextAssets,
-      candidate.project?.assetFolders ?? [],
-      false,
-      diagnostics,
-      Boolean(candidate.readOnly || diagnostics.length),
-      chartDocumentForSession,
-      revisionSeed,
-    );
-    deps.setLibraryProject(candidate.project ?? null);
+    if (!installed) {
+      deps.replaceChart(
+        chart,
+        candidate.name,
+        nextAssets,
+        candidate.project?.assetFolders ?? [],
+        false,
+        diagnostics,
+        Boolean(candidate.readOnly || diagnostics.length),
+        chartDocumentForSession,
+        revisionSeed,
+      );
+      deps.setLibraryProject(candidate.project ?? null);
+      // Start the track only after the old audio owner was released; the
+      // decode then overlaps textures, scene preparation, and the first frame.
+      audioPromise = loadAudio(chart, nextAssets, candidate.name);
+    }
+
+    const viewLine = candidate.project?.viewState?.lineIndex;
+    const activeLine = deps.currentLineIndex();
+    const requestedLine =
+      typeof viewLine === "number" && Number.isInteger(viewLine) && chart.judgeLineList?.[viewLine]
+        ? viewLine
+        : Number.isInteger(activeLine) && chart.judgeLineList?.[activeLine]
+          ? activeLine
+          : null;
+    const initialLine = requestedLine;
 
     task.update("textures");
     await loadingPaint();
@@ -259,61 +336,26 @@ export function createCandidateLoader(deps: CandidateLoaderDependencies) {
       return;
     }
 
-    const references = resourceReferences(
-      chart,
-      deps.currentAssets(),
-      deps.currentChartName(),
-      candidate.info,
-    );
-    const assets = deps.currentAssets();
-    const songPath = references.song
-      ? assetPath(assets, references.song, deps.currentChartName())
-      : null;
-    const songUri = songPath ? assets.uri?.(songPath) : undefined;
     task.update("audio", 0, 2);
     await loadingPaint();
-    // The open is not usable without its track: a user who enters while the
-    // decode is still running cannot hear the music and would have the playhead
-    // restored underneath them when the background load finishes. Wait for the
-    // decoded buffer here; waveform analysis remains asynchronous so playback
-    // does not wait for it.
-    const audioPromise = (async () => {
-      const bytes =
-        assetBytes(assets, references.song, deps.currentChartName()) ??
-        (songPath && assets.read ? await assets.read(songPath) : undefined) ??
-        songUri ??
-        (candidate.desktop && references.song
-          ? deps.resolveDesktopSong(references.song, assets, deps.currentChartName())
-          : undefined);
-      if (!bytes) {
-        if (references.song) {
-          deps.missingMusic(references.song);
-        }
-        return;
-      }
-      const audioStarted = performance.now();
-      await deps.loadMusic(bytes, references.song, false);
-      reportOpenTiming("media.music", performance.now() - audioStarted);
-    })().catch((error) => {
-      deps.reportError?.(error);
-    });
-    await audioPromise;
+    if (audioPromise) {
+      await audioPromise;
+    }
     task.update("audio", 1, 2);
     deps.hitSounds.chart = chart;
     task.update("audio", 2, 2);
 
-    if (deps.currentChart() === chart && candidate.project?.viewState) {
-      const viewLine = candidate.project.viewState.lineIndex;
-      if (
-        typeof viewLine === "number" &&
-        Number.isInteger(viewLine) &&
-        chart.judgeLineList?.[viewLine]
-      ) {
-        deps.selectLine(viewLine);
-      }
+    if (deps.currentChart() === chart && initialLine !== null) {
+      deps.selectLine(initialLine);
     }
 
     task.update("render", 0, 1);
+    // Compile the first scene in bounded slices so the loading surface keeps
+    // painting; entering with a partial scene would be a different bug.
+    await deps.preparePreview?.(task);
+    // A deferred digest stream must finish before the first frame, or the
+    // session would open read-only and change under the author a moment later.
+    await fingerprintReady;
     deps.invalidate();
     const renderStarted = performance.now();
     await deps.waitForFirstRender(task);
@@ -335,6 +377,5 @@ export function createCandidateLoader(deps: CandidateLoaderDependencies) {
     } else {
       setTimeout(scheduleHitSounds, 250);
     }
-    void audioPromise;
   };
 }

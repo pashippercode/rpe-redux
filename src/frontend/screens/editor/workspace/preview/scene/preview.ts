@@ -43,6 +43,7 @@ import type { Chart, JudgeLine, JudgeLineNote } from "../../../../../../core/glo
 import type { NoteEntry } from "../../../../../../core/global/chart/runtime/scene.ts";
 import type { SampledLineState } from "../../../../../../core/global/chart/runtime/scene.ts";
 import type { TempoSource } from "../../../../../../core/global/chart/timing/events.ts";
+import { yieldToHost } from "../../../../../../core/utils/yieldToHost.ts";
 import {
   eventTrackSamplingStats,
   resetEventTrackSamplingStats,
@@ -76,6 +77,10 @@ import type {
 
 /** A shared empty texture table, used when the batch cannot paint. */
 const EMPTY_TEXTURES: NoteTextureTable = Object.freeze([]);
+/** Changed lines one live frame compiles before yielding to the next frame. */
+const SCENE_PATCH_MAX_LINES = 12;
+/** Notes plus events one live frame compiles before yielding to the next frame. */
+const SCENE_PATCH_MAX_OBJECTS = 6_000;
 
 interface RetainedLineBatchKey {
   readonly chart: Chart;
@@ -201,6 +206,8 @@ export class Preview {
   private drawCollectGeometry = false;
   // `declare` fields are assigned by the constructor or methods; this adds types only.
   declare canvas: HTMLCanvasElement;
+  /** A fully prepared scene waiting for the first draw after a document open. */
+  private preparedScene: SceneRuntime | null = null;
   declare scene: SceneRuntime;
   declare shaderRuntime: ShaderRuntime;
   declare shaderPipeline: ShaderPipeline;
@@ -345,6 +352,7 @@ export class Preview {
     this.lastFrame = null;
     this.staticGuideProjection = null;
     this.lastDocumentRevision = null;
+    this.preparedScene = null;
     this.scene.clear();
     this.chart = null;
     this.samplingFocus = null;
@@ -1257,6 +1265,33 @@ export class Preview {
   }
 
   /**
+   * Build a complete scene before the first visible frame.
+   *
+   * Each call compiles one bounded slice and yields, so the loading surface can
+   * paint and report progress. The prepared scene is published only when every
+   * line is compiled; a half-built scene is never sampled.
+   */
+  async prepareScene(
+    chart: Chart,
+    tempo: TempoSource,
+    onProgress?: (completed: number, total: number) => void,
+  ): Promise<void> {
+    const scene = new SceneRuntime();
+    for (;;) {
+      const result = scene.compileSlice(chart, tempo, this.defaultLineColor, {
+        maxObjects: SCENE_PATCH_MAX_OBJECTS,
+        maxLines: SCENE_PATCH_MAX_LINES,
+      });
+      onProgress?.(result.completedLines, result.totalLines);
+      if (result.done) {
+        break;
+      }
+      await yieldToHost();
+    }
+    this.preparedScene = scene;
+  }
+
+  /**
    * Paints one preview frame, or returns early when the last frame matches.
    * `collectGeometry` forces hit geometry and `deferHeavyFrame` postpones
    * expensive repaints past the interaction frame.
@@ -1273,11 +1308,24 @@ export class Preview {
       return;
     }
     const drawStarted = performance.now();
+    let preparedSceneUsed = false;
+    const preparedScene = this.preparedScene;
+    if (preparedScene && preparedScene.chart === chart && preparedScene.tempo === tempo) {
+      this.scene = preparedScene;
+      this.preparedScene = null;
+      preparedSceneUsed = true;
+    }
     const previousTempo = this.scene.tempo;
     const revisionChanged =
       options.documentRevision !== undefined &&
       this.lastDocumentRevision !== options.documentRevision;
-    const chartChanged = this.scene.chart !== chart || previousTempo !== tempo || revisionChanged;
+    const pendingSceneCompile = this.scene.hasDeferredCompile;
+    const chartChanged =
+      preparedSceneUsed ||
+      this.scene.chart !== chart ||
+      previousTempo !== tempo ||
+      revisionChanged ||
+      pendingSceneCompile;
     const tempoChanged = previousTempo !== tempo;
     const lineColorChanged =
       this.scene.defaultLineColor.length !== this.defaultLineColor.length ||
@@ -1376,8 +1424,17 @@ export class Preview {
         this.defaultLineColor,
         chartChanged ? options.changedLineIndexes : undefined,
         chartChanged ? options.noteChangeHints : undefined,
+        this.invalidate
+          ? { maxObjects: SCENE_PATCH_MAX_OBJECTS, maxLines: SCENE_PATCH_MAX_LINES }
+          : undefined,
       );
       sceneCompileMs = performance.now() - started;
+      if (this.scene.hasDeferredCompile) {
+        // A paged batch is larger than one frame's compile budget. Painting the
+        // slice now keeps the surface responsive; the next dirty frame compiles
+        // the next slice without waiting for another document revision.
+        this.invalidate?.();
+      }
     }
     if (chartChanged) {
       const started = performance.now();
