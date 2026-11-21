@@ -4,7 +4,7 @@ User-visible changes for the current release. Chinese first, English second. The
 
 Inside either language section the notes may use two inline annotations: `@name` credits a GitHub user (rendered bold and underlined), and `<red>text</red>` colours a run of text. The tag name is the colour: `accent`, `red`, `yellow`, `green`, `blue`, `purple`, or `gray`. Each resolves through the active theme, so write the name rather than a hex value. GitHub drops the unknown tag, so the release page still reads as plain words.
 
-## 1.0.16-local.1
+## 1.0.16-local.2
 
 ### 中文
 
