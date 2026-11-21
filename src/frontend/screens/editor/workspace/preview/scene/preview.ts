@@ -700,9 +700,10 @@ export class Preview {
     this.shaderPipeline = new ShaderPipeline(() => this.invalidate?.(), this.shaderCanvas);
     this.shaderCompositeDevice = new ShaderCompositeRenderDevice(this.shaderPipeline);
     const sharedBackend = this.shaderPipeline.sharedBackend();
-    this.sharedNoteBatch = Boolean(
-      this.shaderCanvas && sharedBackend && this.shaderPipeline.webgl2,
-    );
+    // Keep the dedicated note canvas as the reliable path. Sharing the shader
+    // canvas made note and line rendering depend on the shader pipeline's
+    // framebuffer state; an empty shader canvas then hid the whole chart.
+    this.sharedNoteBatch = false;
     this.noteBatchCanvas =
       this.sharedNoteBatch && this.shaderCanvas
         ? this.shaderCanvas

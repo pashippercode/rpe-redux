@@ -350,10 +350,21 @@ export function createPreviewRuntime(options: {
       timeline.appearance.skin = skin;
       realtimePreview.skin = skin;
       realtimePreview.images = images;
-      void skin.load().then(() => realtimePreview.prewarm());
+      /** Repaint after a skin swap; prewarm alone leaves the note batch blank. */
+      const refreshPreviewLayers = () => {
+        realtimePreview.invalidateFrame();
+        options.invalidate();
+      };
+      void skin.load().then(() => {
+        realtimePreview.prewarm();
+        refreshPreviewLayers();
+      });
       scope.listen(window, NOTE_SKIN_EVENT, () => {
         hitSounds.invalidateSkinAudio();
-        void skin.applySelection().then(() => realtimePreview.prewarm());
+        void skin.applySelection().then(() => {
+          realtimePreview.prewarm();
+          refreshPreviewLayers();
+        });
       });
       document.fonts.load('35px "Source Han Sans CN"').then(options.invalidate);
     },
