@@ -6,6 +6,7 @@
  * a project with no assets can still find its source file and repair resources.
  */
 import { localService } from "../../../core/global/library/service.ts";
+import { bindCurrentDocumentAssets } from "../../platform/documentStoreHandle.ts";
 import { t } from "../../../i18n/index.ts";
 import { showToast } from "../../../design/patterns/ToastHost.tsx";
 import { beginLoading, loadingProgress } from "../../../core/global/document/loading.ts";
@@ -191,6 +192,7 @@ export function createEditorHomeRuntime(deps: {
       }
     }
     await deps.documents?.close();
+    bindCurrentDocumentAssets(assets);
     await deps.loadCandidate(candidate, assets, task);
     const current = loadingProgress.getSnapshot();
     if (task && current?.id === task.id && current.status === "loading") {
