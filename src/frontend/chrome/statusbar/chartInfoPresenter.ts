@@ -50,6 +50,7 @@ export const setChartInfoExpanded = expanded.set;
 export class EditorChartInfoPresenter {
   private rows: ChartInfoRow[] = [];
   private chart: Chart | null = null;
+  private contentRevision = -1;
   private lineEvents: number[] = [];
   private totalLines = 0;
   private totalNotes = 0;
@@ -85,21 +86,36 @@ export class EditorChartInfoPresenter {
    * chart's total line count.
    */
   render(session: EditorSession, editTime: string): number {
-    // A selection-only publication keeps the same chart object, so totals are
-    // recomputed only when the chart identity changes.
-    if (this.chart !== session.chart) {
+    // A selection-only publication keeps the same chart object. A paged
+    // document also keeps that object across line materialization, so its
+    // content revision is the signal for recounting the loaded snapshot.
+    const revision = session.chartDocument ? session.contentRevision : -1;
+    if (this.chart !== session.chart || this.contentRevision !== revision) {
       this.chart = session.chart;
+      this.contentRevision = revision;
+      const document = session.chartDocument;
+      const summaries = document?.index?.lines;
       const lines = session.chart.judgeLineList ?? [];
-      this.totalLines = lines.length;
+      this.totalLines = document?.lineCount ?? lines.length;
       this.totalNotes = 0;
       this.totalEvents = 0;
-      this.lineEvents = new Array<number>(lines.length);
-      for (let index = 0; index < lines.length; index++) {
-        const line = lines[index];
-        const events = this.baseEventCount(line) + shaderEvents(session.chart, index).length;
-        this.lineEvents[index] = events;
-        this.totalNotes += line.notes?.length ?? 0;
-        this.totalEvents += events;
+      this.lineEvents = new Array<number>(this.totalLines).fill(0);
+      if (summaries) {
+        // The streamed index already walked every line. Keeping its totals
+        // means placeholders never make the chart look shorter or emptier.
+        for (const summary of summaries) {
+          this.lineEvents[summary.index] = summary.eventCount;
+          this.totalNotes += summary.noteCount;
+          this.totalEvents += summary.eventCount;
+        }
+      } else {
+        for (let index = 0; index < lines.length; index++) {
+          const line = lines[index];
+          const events = this.baseEventCount(line) + shaderEvents(session.chart, index).length;
+          this.lineEvents[index] = events;
+          this.totalNotes += line.notes?.length ?? 0;
+          this.totalEvents += events;
+        }
       }
     }
     const currentEvents = this.lineEvents[session.lineIndex] ?? 0;

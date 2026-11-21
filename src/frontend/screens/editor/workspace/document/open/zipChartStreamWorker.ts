@@ -47,7 +47,7 @@ function reply(message: ChartWorkerResponse): void {
   workerScope.postMessage(message);
 }
 
-/** Hydrate semantic line digests after the first frame can be opened. */
+/** Hydrate semantic line digests before the editor opens. */
 async function fingerprintSource(id: number, source: ArchiveChartSession): Promise<void> {
   for (let start = 0; start < source.ranges.length; start += 8) {
     const seeds = [];

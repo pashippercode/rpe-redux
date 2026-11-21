@@ -71,6 +71,14 @@ export interface ChartLineSummary {
   readonly byteLength: number;
   readonly noteCount: number;
   readonly eventCount: number;
+  /**
+   * Speed events on the line.
+   *
+   * Paging reads speed events before ordinary notes because the floor cursor
+   * cannot place a note until every active speed layer is known. Older indexes
+   * omit the field; treat a missing value as zero.
+   */
+  readonly speedEventCount?: number;
   /** Earliest line time in seconds, or null when the line has no lower bound. */
   readonly startSeconds: number | null;
   /** Latest line time in seconds, or null when the line has no upper bound. */

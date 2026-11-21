@@ -292,6 +292,11 @@ export class History {
         changedLineIndexes: options.changedLineIndexes,
         normalized: options.normalized,
       });
+      const afterFingerprint = options.afterFingerprint ?? this.chartDocument.fingerprint();
+      // The planner already hashed the changed lines, or `fingerprint()` just
+      // did. Keep that aggregate so the next history or coordinator read does
+      // not map every slot again.
+      this.chartDocument.cacheFingerprint(afterFingerprint);
       const after = { ...this.chartDocument.chart, judgeLineList: afterLines } as Chart;
       invalidateChartLocations(this.chartDocument.chart);
       const command: HistoryCommand = {
@@ -302,7 +307,7 @@ export class History {
         after,
         bytes: options.estimatedBytes ?? Math.max(64, afterLines.length * 8),
         beforeFingerprint,
-        afterFingerprint: options.afterFingerprint ?? this.chartDocument.fingerprint(),
+        afterFingerprint,
         affectedObjectIds: Object.freeze([...(metadata.affectedObjectIds ?? [])]),
         issues: Object.freeze([...(metadata.issues ?? [])]),
         origin: metadata.origin ? structuredClone(metadata.origin) : undefined,
@@ -442,6 +447,7 @@ export class History {
     this.redoStack.push(command);
     if (this.chartDocument && command.beforeLines && command.beforeHeader) {
       this.chartDocument.applyLineSnapshot(command.beforeLines, command.beforeHeader);
+      this.chartDocument.cacheFingerprint(command.beforeFingerprint);
       this.document = this.chartDocument.chart;
     } else {
       this.document = command.before;
@@ -463,6 +469,7 @@ export class History {
     this.undoStack.push(command);
     if (this.chartDocument && command.afterLines && command.afterHeader) {
       this.chartDocument.applyLineSnapshot(command.afterLines, command.afterHeader);
+      this.chartDocument.cacheFingerprint(command.afterFingerprint);
       this.document = this.chartDocument.chart;
     } else {
       this.document = command.after;

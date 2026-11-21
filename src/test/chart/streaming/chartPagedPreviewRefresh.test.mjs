@@ -38,7 +38,7 @@ function pagedChart() {
 }
 
 /** Build a document over one serialized chart. */
-function documentFromText(text) {
+function documentFromText(text, options = { maxCachedLines: 2 }) {
   const scan = scanChartJson(text);
   const header = chartHeaderFromScan(scan);
   const tempo = new TempoMap(header.BPMList);
@@ -50,18 +50,43 @@ function documentFromText(text) {
       return range ? scan.text.slice(range.start, range.end) : undefined;
     },
   };
-  return new ChartDocument({ header, index, provider, maxCachedLines: 2 });
+  return new ChartDocument({ header, index, provider, ...options });
 }
 
 /** Open a paged session with one line materialized and selected. */
-async function pagedSession() {
+async function pagedSession(options = { maxCachedLines: 2 }) {
   const chart = pagedChart();
-  const document = documentFromText(serializeChart(chart));
+  const document = documentFromText(serializeChart(chart), options);
   const session = EditorSession.fromDocument(document);
   await document.ensureLine(2);
   session.selectLine(2);
   return { chart, document, session, tempo: new TempoMap(chart.BPMList) };
 }
+
+test("a full scene compiles in bounded slices before it is published", () => {
+  const chart = createChart();
+  chart.judgeLineList = Array.from({ length: 40 }, (_, index) => {
+    const line = createLine(`Line ${index}`);
+    line.notes = [createNote(1, index, index / 40)];
+    return line;
+  });
+  const tempo = new TempoMap(chart.BPMList);
+  const scene = new SceneRuntime();
+  const completed = [];
+  for (let pass = 0; pass < 40; pass++) {
+    const result = scene.compileSlice(chart, tempo, undefined, { maxLines: 4 });
+    completed.push(result.completedLines);
+    if (result.done) {
+      break;
+    }
+  }
+  assert.ok(completed.length > 1, "the first frame does not compile the whole chart");
+  assert.equal(completed.at(-1), 40);
+  assert.equal(scene.lines.length, 40);
+  assert.ok(scene.lines.every((line) => line?.notes.length === 1));
+  assert.equal(scene.order.length, 40);
+  assert.deepEqual(scene.noteOrder, scene.order);
+});
 
 test("paged note insertion refreshes the compiled scene without a new chart", async () => {
   const { session, tempo } = await pagedSession();
@@ -133,6 +158,32 @@ test("paged line materialization bumps the session content revision", async () =
   );
   scene.compile(session.chart, tempo);
   assert.ok(scene.lines[7], "the materialized line gains a runtime");
+});
+
+test("paged scene compile yields between newly materialized lines", async () => {
+  const { document, session, tempo } = await pagedSession({ maxCachedLines: 0 });
+  const scene = new SceneRuntime();
+  scene.compile(session.chart, tempo);
+  assert.equal(scene.lines.filter(Boolean).length, 1, "only the selected line is loaded");
+
+  await document.ensureLine(0);
+  await document.ensureLine(1);
+  await document.ensureLine(3);
+  const budget = { maxLines: 1, maxObjects: 1 };
+
+  scene.compile(session.chart, tempo, undefined, undefined, undefined, budget);
+  assert.equal(scene.hasDeferredCompile, true);
+  assert.equal(scene.lines.filter(Boolean).length, 2, "one changed line fits this frame");
+
+  let passes = 0;
+  while (scene.hasDeferredCompile && passes < 10) {
+    scene.compile(session.chart, tempo, undefined, undefined, undefined, budget);
+    passes += 1;
+  }
+
+  assert.equal(passes, 2);
+  assert.equal(scene.hasDeferredCompile, false);
+  assert.equal(scene.lines.filter(Boolean).length, 4);
 });
 
 test("paged note placement keeps the incremental fingerprint exact", async () => {

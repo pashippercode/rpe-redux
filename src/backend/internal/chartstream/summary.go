@@ -38,13 +38,16 @@ const maxSafeInteger = 1<<53 - 1
 // LineSummary is one line's index entry; it never contains note or event
 // objects. Intervals are disjoint activity ranges used by paged time windows.
 type LineSummary struct {
-	Index        int      `json:"index"`
-	ByteOffset   int      `json:"byteOffset"`
-	ByteLength   int      `json:"byteLength"`
-	NoteCount    int      `json:"noteCount"`
-	EventCount   int      `json:"eventCount"`
-	StartSeconds *float64 `json:"startSeconds"`
-	EndSeconds   *float64 `json:"endSeconds"`
+	Index      int `json:"index"`
+	ByteOffset int `json:"byteOffset"`
+	ByteLength int `json:"byteLength"`
+	NoteCount  int `json:"noteCount"`
+	EventCount int `json:"eventCount"`
+	// SpeedEventCount lets a pager read floor-defining events first. Older
+	// indexes omit it, which callers read as zero.
+	SpeedEventCount int      `json:"speedEventCount,omitempty"`
+	StartSeconds    *float64 `json:"startSeconds"`
+	EndSeconds      *float64 `json:"endSeconds"`
 	// Intervals are disjoint activity ranges used by paged time windows.
 	Intervals [][2]float64 `json:"intervals,omitempty"`
 	Digest    string       `json:"digest"`
@@ -402,6 +405,7 @@ func SummarizeLine(line any, index int, tempo *TempoMap, byteOffset, byteLength 
 	intervals := make([][2]float64, 0)
 	noteCount := 0
 	eventCount := 0
+	speedEventCount := 0
 	hasAlphaEvents := false
 	lastAlphaEndSet := false
 	lastAlphaEnd := 0.0
@@ -450,6 +454,9 @@ func SummarizeLine(line any, index int, tempo *TempoMap, byteOffset, byteLength 
 				continue
 			}
 			eventCount += len(events)
+			if track == "speedEvents" {
+				speedEventCount += len(events)
+			}
 			if track == "paintEvents" && len(events) > 0 {
 				hasShader = true
 			}
@@ -535,18 +542,19 @@ func SummarizeLine(line any, index int, tempo *TempoMap, byteOffset, byteLength 
 	}
 
 	summary := LineSummary{
-		Index:        index,
-		ByteOffset:   byteOffset,
-		ByteLength:   byteLength,
-		NoteCount:    noteCount,
-		EventCount:   eventCount,
-		StartSeconds: startSeconds,
-		EndSeconds:   endSeconds,
-		Intervals:    mergeIntervals(intervals),
-		Digest:       digest,
-		Flags:        flags,
-		Group:        group,
-		Father:       father,
+		Index:           index,
+		ByteOffset:      byteOffset,
+		ByteLength:      byteLength,
+		NoteCount:       noteCount,
+		EventCount:      eventCount,
+		SpeedEventCount: speedEventCount,
+		StartSeconds:    startSeconds,
+		EndSeconds:      endSeconds,
+		Intervals:       mergeIntervals(intervals),
+		Digest:          digest,
+		Flags:           flags,
+		Group:           group,
+		Father:          father,
 	}
 	if id, ok := record["id"].(string); ok {
 		summary.ID = id

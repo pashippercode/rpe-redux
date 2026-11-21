@@ -113,6 +113,8 @@ export function mergeCompletionTimes(parts: readonly (readonly number[])[]): num
 export class CompletionTimesCache {
   private tempo: TempoSource | null = null;
   private sources: readonly (readonly JudgeLineNote[] | undefined)[] = [];
+  /** Runtime identities, so a line that materializes after a partial compile is recomputed. */
+  private lines: readonly unknown[] = [];
   private lineTimes: number[][] = [];
   private merged: number[] = [];
 
@@ -125,21 +127,34 @@ export class CompletionTimesCache {
     const tempoChanged = this.tempo !== tempo;
     if (tempoChanged) {
       this.sources = [];
+      this.lines = [];
       this.lineTimes = [];
       this.tempo = tempo;
     }
     const previousSources = this.sources;
+    const previousLines = this.lines;
     let changed = tempoChanged || previousSources.length !== lines.length;
     if (this.lineTimes.length !== lines.length) {
       this.lineTimes.length = lines.length;
     }
     for (let index = 0; index < lines.length; index += 1) {
-      if (tempoChanged || previousSources[index] !== sources[index] || !this.lineTimes[index]) {
+      // A partially compiled paged scene leaves a line without a runtime while
+      // its note array is already visible. Recompute the first time that runtime
+      // appears, but keep the normal edit path keyed on the note array so an
+      // unchanged line is never walked again.
+      const runtimeAppeared = !previousLines[index] && Boolean(lines[index]);
+      if (
+        tempoChanged ||
+        previousSources[index] !== sources[index] ||
+        runtimeAppeared ||
+        !this.lineTimes[index]
+      ) {
         this.lineTimes[index] = completionTimesForEntries(lines[index]?.notes ?? []);
         changed = true;
       }
     }
     this.sources = sources;
+    this.lines = lines;
     if (!changed && this.merged.length) {
       return this.merged;
     }
@@ -151,6 +166,7 @@ export class CompletionTimesCache {
   clear(): void {
     this.tempo = null;
     this.sources = [];
+    this.lines = [];
     this.lineTimes = [];
     this.merged = [];
   }

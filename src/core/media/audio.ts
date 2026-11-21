@@ -203,9 +203,17 @@ export class AudioTransport {
   /**
    * Load and decode a song, cancelling any earlier load.
    *
+   * `onDecoded` runs as soon as the playable buffer is installed, before the
+   * optional time-stretcher worklet finishes. That lets the spectrum and
+   * waveform workers reuse the buffer while the chart is still loading.
+   *
    * Returns false when a newer load or clear superseded this one.
    */
-  async load(bytes: AudioSource, name = "music.mp3"): Promise<boolean> {
+  async load(
+    bytes: AudioSource,
+    name = "music.mp3",
+    options: { onDecoded?: (buffer: AudioBuffer) => void } = {},
+  ): Promise<boolean> {
     this.cancelLoad?.();
     const revision = ++this.loadRevision;
     this.pause();
@@ -233,7 +241,10 @@ export class AudioTransport {
     this.loadedSource = bytes;
     this.position = 0;
     this.applyPitchStrategy();
-    await this.prepareStretcher(decoded, revision);
+    options.onDecoded?.(decoded);
+    // Pitch preservation is optional for the first frame; playback at 1x uses
+    // the buffer directly. A slow worklet therefore must not hold the open.
+    void this.prepareStretcher(decoded, revision);
     return revision === this.loadRevision;
   }
 

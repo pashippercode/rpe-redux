@@ -28,6 +28,7 @@ import { CONTROL_TRACKS, type ControlTrackProperty } from "../chartTracks.ts";
 import { trajectoryHasRotation } from "../trajectory/curveTrajectory.ts";
 import { beatValue, isOrderedBeatRange } from "../timing/beat.ts";
 import { isPlaceholderLine } from "../streaming/chartDocument.ts";
+import { registeredChartDocument } from "../streaming/chartDocumentRegistry.ts";
 import { noteAlpha } from "../optionalFeatures.ts";
 import { renderDetailedProfileEnabled } from "../../../diagnostics/renderMetrics.ts";
 import { contentFingerprint } from "../chartContentHash.ts";
@@ -1483,6 +1484,14 @@ function sameLineSources(previous: JudgeLine, next: JudgeLine): boolean {
   );
 }
 
+/** Optional per-pass budget for changed lines a paged document just materialized. */
+export interface SceneCompileOptions {
+  /** Notes plus events one patch pass may compile. */
+  readonly maxObjects?: number;
+  /** Changed lines one patch pass may compile. */
+  readonly maxLines?: number;
+}
+
 /** Compiled chart runtime: line order plus per-line sampling and rebuild caches. */
 export class SceneRuntime {
   declare cache: WeakMap<JudgeLine, LineRuntime>;
@@ -1527,6 +1536,21 @@ export class SceneRuntime {
   private runtimeById = new Map<string, LineRuntime>();
   /** Counters exposed to the preview timing sample without allocating per frame. */
   readonly lastSampleStats: SceneSampleStats = emptySceneSampleStats();
+  /** Changed lines the last patch pass left for the next frame. */
+  private deferredPatchCount = 0;
+  /** A fresh full-chart compile split across calls; finalized only when complete. */
+  private incrementalCompile: {
+    chart: Chart;
+    tempo: TempoSource;
+    color: number[];
+    sourceLines: JudgeLine[];
+    index: number;
+  } | null = null;
+
+  /** True when a patch pass stopped at its budget and needs another frame. */
+  get hasDeferredCompile(): boolean {
+    return this.deferredPatchCount > 0;
+  }
 
   /** Return whether a line's world transform is time-invariant, including its parent chain. */
   isWorldStateStatic(index: number): boolean {
@@ -1571,6 +1595,8 @@ export class SceneRuntime {
     this.lastSampleStats.continuousLineCount = 0;
     this.lastSampleStats.parentComposeCount = 0;
     this.lastSampleStats.stateCopyCount = 0;
+    this.deferredPatchCount = 0;
+    this.incrementalCompile = null;
   }
 
   /** Compile `chart`, reusing or incrementally updating line runtimes where possible. */
@@ -1580,6 +1606,7 @@ export class SceneRuntime {
     defaultLineColor: readonly number[] = this.defaultLineColor,
     changedLineIndexes?: readonly number[],
     noteChangeHints?: readonly NoteChangeHint[],
+    options: SceneCompileOptions = {},
   ): void {
     const nextColor = normalizedColor(defaultLineColor);
     const colorChanged = !colorsEqual(this.defaultLineColor, nextColor);
@@ -1622,6 +1649,7 @@ export class SceneRuntime {
       sameLineCount &&
       patchIndexes.length === 0
     ) {
+      this.deferredPatchCount = 0;
       return;
     }
     const tempoChanged = this.tempo !== tempo;
@@ -1639,6 +1667,13 @@ export class SceneRuntime {
       previousChart !== null &&
       sameLineCount &&
       this.lines.length === sourceLines.length;
+    // A paged batch can add thousands of events to several lines at once. Compile
+    // a bounded slice now and leave the rest for the next frame; the preview
+    // requests that frame while `hasDeferredCompile` stays true.
+    const compileIndexes = canPatch
+      ? this.budgetedPatchIndexes(chart, patchIndexes, options)
+      : patchIndexes;
+    const deferredPatchCount = canPatch ? patchIndexes.length - compileIndexes.length : 0;
     const previousById = this.runtimeById;
     const noteHintsByLine = new Map(
       (noteChangeHints ?? []).map((hint) => [hint.lineIndex, hint] as const),
@@ -1713,7 +1748,7 @@ export class SceneRuntime {
       if (lineLocal) {
         let noteOrderChanged = false;
         let staticnessChanged = false;
-        for (const index of patchIndexes) {
+        for (const index of compileIndexes) {
           const previousLine = previousLines[index];
           const nextLine = sourceLines[index];
           if (!nextLine || previousLine === nextLine) {
@@ -1740,6 +1775,7 @@ export class SceneRuntime {
         if (noteOrderChanged) {
           this.noteOrder = this.order.filter((index) => (this.lines[index]?.notes.length ?? 0) > 0);
         }
+        this.deferredPatchCount = deferredPatchCount;
         if (noteOnly) {
           return;
         }
@@ -1753,7 +1789,7 @@ export class SceneRuntime {
         }
         this.sampledSeconds = Number.NaN;
         this.sampledStates = null;
-        for (const index of patchIndexes) {
+        for (const index of compileIndexes) {
           this.localStates[index] = undefined;
           this.localStateVersions[index] = (this.localStateVersions[index] + 1) >>> 0;
           this.worldStateCache[index] = undefined;
@@ -1764,7 +1800,7 @@ export class SceneRuntime {
       this.sampledStates = null;
       refreshParents();
       this.runtimeById = new Map(previousById);
-      for (const index of patchIndexes) {
+      for (const index of compileIndexes) {
         const previousLine = previousLines[index];
         const nextLine = sourceLines[index];
         if (previousLine && previousLine !== nextLine) {
@@ -1777,7 +1813,11 @@ export class SceneRuntime {
           nextLine,
           noteHintsByLine.get(index),
         ) as unknown as LineRuntime;
+        if (nextLine) {
+          this.orderLines[index] = nextLine;
+        }
       }
+      this.deferredPatchCount = deferredPatchCount;
     } else {
       this.sampledSeconds = Number.NaN;
       this.sampledStates = null;
@@ -1786,17 +1826,31 @@ export class SceneRuntime {
       this.lines = sourceLines.map(
         (line, index) => compileLine(line, noteHintsByLine.get(index)) as unknown as LineRuntime,
       );
+      this.deferredPatchCount = 0;
     }
     if (canPatch && this.localStates.length === this.lines.length) {
       // A copy-on-write edit replaces only the listed line runtimes. Keep the
       // reusable local state objects for every untouched line; dropping the
       // whole array makes the next frame allocate one state per dynamic line
       // and turns a one-note CRUD edit into a GC-sized playback hitch.
-      for (const index of patchIndexes) {
+      for (const index of compileIndexes) {
         this.localStates[index] = undefined;
       }
     } else {
       this.localStates = new Array(this.lines.length);
+    }
+    if (this.deferredPatchCount > 0) {
+      // Keep the compiled lines' sample caches coherent, but leave the
+      // `orderLines` snapshot alone for the lines still waiting. The next pass
+      // sees them as changed and resumes from this budget.
+      for (const index of compileIndexes) {
+        this.localStateVersions[index] = (this.localStateVersions[index] + 1) >>> 0;
+        this.worldStateVersions[index] = (this.worldStateVersions[index] + 1) >>> 0;
+        this.worldStateCache[index] = undefined;
+      }
+      this.refreshWorldStaticStates(sourceLines);
+      this.noteOrder = this.order.filter((index) => (this.lines[index]?.notes.length ?? 0) > 0);
+      return;
     }
     // A line patch can change an ancestor, inheritance mode, or local transform. The
     // identity checks below make frame reuse safe, while this reset prevents a stale
@@ -1820,6 +1874,148 @@ export class SceneRuntime {
     }
     this.order = this.sortedOrder;
     this.noteOrder = this.order.filter((index) => (this.lines[index]?.notes.length ?? 0) > 0);
+  }
+
+  /**
+   * Compile a fresh chart into bounded slices.
+   *
+   * The caller drives the loop and must not sample this runtime until `done`;
+   * a detached scene therefore prepares a new document without disturbing the
+   * preview's last painted frame. Compiling at least one line per call avoids a
+   * budget that can never finish on an oversized line.
+   */
+  compileSlice(
+    chart: Chart,
+    tempo: TempoSource,
+    defaultLineColor: readonly number[] = this.defaultLineColor,
+    options: SceneCompileOptions = {},
+  ): { done: boolean; completedLines: number; totalLines: number } {
+    const color = normalizedColor(defaultLineColor);
+    let state = this.incrementalCompile;
+    if (
+      !state ||
+      state.chart !== chart ||
+      state.tempo !== tempo ||
+      !colorsEqual(state.color, color)
+    ) {
+      this.clear();
+      const sourceLines = chart.judgeLineList ?? [];
+      this.chart = chart;
+      this.tempo = tempo;
+      this.defaultLineColor = color;
+      this.orderLines = [...sourceLines];
+      this.lines = new Array<LineRuntime>(sourceLines.length);
+      this.runtimeById = new Map();
+      this.parentIndexes = Int32Array.from(sourceLines, (line) => {
+        const parent = lineParentIndex(line.father);
+        return Number.isInteger(parent) ? parent : -1;
+      });
+      this.hasParentLines = this.parentIndexes.some((parent) => parent >= 0);
+      state = { chart, tempo, color, sourceLines, index: 0 };
+      this.incrementalCompile = state;
+    }
+    const sourceLines = state.sourceLines;
+    const maxObjects = Math.max(0, options.maxObjects ?? 0);
+    const maxLines = Math.max(0, options.maxLines ?? 0);
+    const summaries = registeredChartDocument(chart)?.index?.lines;
+    let objects = 0;
+    let compiled = 0;
+    while (state.index < sourceLines.length) {
+      const summary = summaries?.[state.index];
+      const cost = summary ? summary.noteCount + summary.eventCount : 1;
+      if (
+        compiled > 0 &&
+        ((maxLines > 0 && compiled >= maxLines) ||
+          (maxObjects > 0 && objects + cost > maxObjects))
+      ) {
+        break;
+      }
+      const line = sourceLines[state.index];
+      if (!isPlaceholderLine(line)) {
+        const runtime = new LineRuntime(line, tempo, color);
+        this.lines[state.index] = runtime;
+        if (typeof line.id === "string") {
+          this.runtimeById.set(line.id, runtime);
+        }
+      }
+      objects += cost;
+      compiled += 1;
+      state.index += 1;
+    }
+    const done = state.index >= sourceLines.length;
+    if (done) {
+      this.finishIncrementalCompile(state);
+    }
+    return { done, completedLines: state.index, totalLines: sourceLines.length };
+  }
+
+  /** Publish a fully compiled incremental scene and rebuild its derived orders. */
+  private finishIncrementalCompile(state: {
+    chart: Chart;
+    tempo: TempoSource;
+    color: number[];
+    sourceLines: JudgeLine[];
+    index: number;
+  }): void {
+    const sourceLines = state.sourceLines;
+    this.incrementalCompile = null;
+    this.sampledSeconds = Number.NaN;
+    this.sampledStates = null;
+    this.sampledTempo = null;
+    this.parentOrder = null;
+    this.dynamicSampleOrder = [];
+    this.deferredPatchCount = 0;
+    this.localStates = new Array(this.lines.length);
+    this.worldStateCache = new Array(this.lines.length);
+    this.localStateVersions = new Uint32Array(this.lines.length);
+    this.worldStateVersions = new Uint32Array(this.lines.length);
+    this.refreshWorldStaticStates(sourceLines);
+    this.orderValues = Float64Array.from(sourceLines, (line) => Number(line.zOrder ?? 0));
+    this.sortedOrder = sourceLines
+      .map((_line, index) => index)
+      .sort((left, right) => this.orderValues[left] - this.orderValues[right] || left - right);
+    this.order = this.sortedOrder;
+    this.noteOrder = this.order.filter((index) => (this.lines[index]?.notes.length ?? 0) > 0);
+  }
+
+  /**
+   * Select the changed lines one patch pass may compile.
+   *
+   * A paged document's index already carries each line's object count, so the
+   * budget is charged before a line is compiled. The first line always fits:
+   * splitting one line's runtime would require an in-line compile budget, and
+   * an oversized line must eventually render.
+   */
+  private budgetedPatchIndexes(
+    chart: Chart,
+    indexes: readonly number[],
+    options: SceneCompileOptions,
+  ): number[] {
+    if (indexes.length <= 1) {
+      return [...indexes];
+    }
+    const maxObjects = Math.max(0, options.maxObjects ?? 0);
+    const maxLines = Math.max(0, options.maxLines ?? 0);
+    if (maxObjects === 0 && maxLines === 0) {
+      return [...indexes];
+    }
+    const summaries = registeredChartDocument(chart)?.index?.lines;
+    const selected: number[] = [];
+    let objects = 0;
+    for (const index of indexes) {
+      const summary = summaries?.[index];
+      const cost = summary ? summary.noteCount + summary.eventCount : 1;
+      if (
+        selected.length > 0 &&
+        ((maxLines > 0 && selected.length >= maxLines) ||
+          (maxObjects > 0 && objects + cost > maxObjects))
+      ) {
+        break;
+      }
+      selected.push(index);
+      objects += cost;
+    }
+    return selected;
   }
 
   /**

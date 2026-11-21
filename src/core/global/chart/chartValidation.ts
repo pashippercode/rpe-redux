@@ -27,10 +27,16 @@ function negativeBeatSignature(item: { startTime?: unknown; endTime?: unknown })
   return `${item.startTime.join(",")}|${item.endTime.join(",")}`;
 }
 
-/** Find negative beat ranges by stable object id, with a positional fallback. */
+/**
+ * Find negative beat ranges by stable object id, with a positional fallback.
+ *
+ * This is the whole-chart gate used by load, save, and export. A commit passes
+ * the changed line indexes and uses the identity comparison below instead.
+ */
 function negativeBeatRanges(chart: Chart): Map<string, string> {
   const ranges = new Map<string, string>();
-  for (const [lineIndex, line] of (chart.judgeLineList ?? []).entries()) {
+  const lines = chart.judgeLineList ?? [];
+  const visit = (lineIndex: number, line: JudgeLine): void => {
     for (const [noteIndex, note] of (line.notes ?? []).entries()) {
       const signature = negativeBeatSignature(note);
       if (signature) {
@@ -61,16 +67,160 @@ function negativeBeatRanges(chart: Chart): Map<string, string> {
         }
       }
     }
+  };
+  for (const [lineIndex, line] of lines.entries()) {
+    visit(lineIndex, line);
   }
   return ranges;
 }
 
 /** Reject newly-created negative note or event beats while preserving load-time diagnostics. */
-export function assertNoNewNegativeBeatRanges(previous: Chart, next: Chart): void {
+export function assertNoNewNegativeBeatRanges(
+  previous: Chart,
+  next: Chart,
+  lineIndexes?: readonly number[],
+): void {
+  if (lineIndexes) {
+    // A CRUD commit replaces at most a handful of lines. Compare each changed
+    // line by object identity and inspect only the notes/events that actually
+    // appeared, instead of walking every event on the line twice.
+    for (const lineIndex of new Set(lineIndexes)) {
+      assertNewLineNegativeBeats(
+        previous.judgeLineList?.[lineIndex],
+        next.judgeLineList?.[lineIndex],
+      );
+    }
+    return;
+  }
   const previousRanges = negativeBeatRanges(previous);
   for (const [key, signature] of negativeBeatRanges(next)) {
     if (previousRanges.get(key) !== signature) {
       throw new Error(t("model.beat.negative"));
+    }
+  }
+}
+
+/** One note or event as the negative-beat comparison needs it. */
+interface BeatRangeItem {
+  readonly id?: unknown;
+  readonly startTime?: unknown;
+  readonly endTime?: unknown;
+}
+
+/** One item's stable comparison key; normalized chart objects carry ids. */
+function negativeItemKey(item: BeatRangeItem): string {
+  return typeof item.id === "string" ? item.id : "";
+}
+
+/**
+ * Return items present in `next` but not the same object in `previous`.
+ *
+ * Edits are copy-on-write, so unchanged notes and events keep their identity.
+ * The append and same-length paths avoid allocating a set for the common drag
+ * and placement cases; a large positional replacement falls back to identity
+ * membership.
+ */
+function newItems(
+  previous: readonly BeatRangeItem[],
+  next: readonly BeatRangeItem[],
+): readonly BeatRangeItem[] {
+  if (previous === next || !next.length) {
+    return [];
+  }
+  if (!previous.length) {
+    return next;
+  }
+  if (next.length >= previous.length) {
+    let prefix = true;
+    for (let index = 0; index < previous.length; index += 1) {
+      if (previous[index] !== next[index]) {
+        prefix = false;
+        break;
+      }
+    }
+    if (prefix) {
+      return next.slice(previous.length);
+    }
+  }
+  if (previous.length === next.length) {
+    const changed: BeatRangeItem[] = [];
+    for (let index = 0; index < next.length; index += 1) {
+      if (previous[index] !== next[index]) {
+        changed.push(next[index]);
+      }
+    }
+    if (changed.length <= 64) {
+      return changed;
+    }
+  }
+  const seen = new Set(previous);
+  return next.filter((item) => !seen.has(item));
+}
+
+/** Throw when `next` introduces a negative beat absent from `previous`. */
+function assertNewNegativeItems(
+  previous: readonly BeatRangeItem[] | undefined,
+  next: readonly BeatRangeItem[] | undefined,
+): void {
+  const candidates = newItems(previous ?? [], next ?? []);
+  if (!candidates.length) {
+    return;
+  }
+  let previousNegatives: Map<string, string> | null = null;
+  for (const item of candidates) {
+    const signature = negativeBeatSignature(item);
+    if (!signature) {
+      continue;
+    }
+    if (!previousNegatives) {
+      // Only a candidate that is actually negative pays for the previous-line
+      // negative map. This also keeps a cloned pre-existing negative note valid.
+      previousNegatives = new Map();
+      for (const previousItem of previous ?? []) {
+        const previousSignature = negativeBeatSignature(previousItem);
+        if (previousSignature) {
+          previousNegatives.set(negativeItemKey(previousItem), previousSignature);
+        }
+      }
+    }
+    if (previousNegatives.get(negativeItemKey(item)) !== signature) {
+      throw new Error(t("model.beat.negative"));
+    }
+  }
+}
+
+/** Compare one replaced line's notes and event tracks by object identity. */
+function assertNewLineNegativeBeats(
+  previous: JudgeLine | undefined,
+  next: JudgeLine | undefined,
+): void {
+  if (!next || previous === next) {
+    return;
+  }
+  assertNewNegativeItems(previous?.notes, next.notes);
+  const previousLayers: Array<Record<string, unknown> | undefined> = [
+    ...(previous?.eventLayers ?? []),
+    previous?.extended,
+  ] as Array<Record<string, unknown> | undefined>;
+  const nextLayers: Array<Record<string, unknown> | undefined> = [
+    ...(next.eventLayers ?? []),
+    next.extended,
+  ] as Array<Record<string, unknown> | undefined>;
+  for (let layerIndex = 0; layerIndex < nextLayers.length; layerIndex += 1) {
+    const previousLayer = previousLayers[layerIndex];
+    const nextLayer = nextLayers[layerIndex];
+    if (!nextLayer || previousLayer === nextLayer) {
+      continue;
+    }
+    for (const [track, events] of Object.entries(nextLayer)) {
+      if (!Array.isArray(events)) {
+        continue;
+      }
+      const previousEvents = previousLayer?.[track];
+      assertNewNegativeItems(
+        Array.isArray(previousEvents) ? previousEvents : undefined,
+        events as Array<Record<string, unknown>>,
+      );
     }
   }
 }

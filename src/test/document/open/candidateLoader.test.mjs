@@ -1,6 +1,6 @@
 /**
- * Candidate-loader regressions: streamed library charts must be complete before
- * the editor replaces the current document.
+ * Candidate-loader regressions: a streamed chart opens only after every line is
+ * materialized, and the music track is ready before the first render.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,6 +26,7 @@ import { createCandidateLoader } from "../../../frontend/screens/editor/workspac
 /** Build a streamed chart large enough to exercise the old paged-open branch. */
 function largeStreamedDocument() {
   const chart = createChart();
+  chart.META.song = "song.mp3";
   chart.judgeLineList = Array.from({ length: 10_001 }, (_, index) => {
     const line = createLine(`Line ${index}`);
     line.notes = [createNote(1, 10_000 + index, 0)];
@@ -52,9 +53,10 @@ function largeStreamedDocument() {
   return { chart, document };
 }
 
-test("library stream opens only after every line is materialized", async () => {
+test("library stream installs before audio and completes with every line", async () => {
   const { chart, document } = largeStreamedDocument();
   let installed = chart;
+  const order = [];
   const updates = [];
   const noop = () => undefined;
   const task = {
@@ -68,13 +70,17 @@ test("library stream opens only after every line is materialized", async () => {
     hitSounds: { chart: null, prepare: async () => undefined },
     replaceChart(next) {
       installed = next;
+      order.push("replace");
     },
     setLibraryProject: noop,
     currentChart: () => installed,
     currentAssets: () => new Map(),
     currentChartName: () => "large-streamed-chart",
+    currentLineIndex: () => 0,
     resolveDesktopSong: () => undefined,
-    loadMusic: async () => undefined,
+    loadMusic: async () => {
+      order.push("audio");
+    },
     missingMusic: noop,
     selectLine: noop,
     invalidate: noop,
@@ -88,23 +94,29 @@ test("library stream opens only after every line is materialized", async () => {
       name: "large-streamed-chart",
       project: { id: "project-1", name: "large-streamed-chart" },
     },
-    new Map(),
+    new Map([["song.mp3", new Uint8Array([1, 2, 3])]]),
     task,
   );
 
+  assert.equal(installed, document.chart, "the session keeps the paged facade");
   assert.equal(installed.judgeLineList.length, 10_001);
+  assert.deepEqual(order, ["replace", "audio"], "audio starts only after the old owner is released");
+  assert.equal(
+    installed.judgeLineList.some(isPlaceholderLine),
+    false,
+    "the open waits for the whole line graph",
+  );
+  assert.equal(document.unloadedLineCount(), 0, "no page is left for a background pump");
   const contentUpdates = updates.filter(([stage]) => stage === "content");
   assert.ok(contentUpdates.length > 0);
   const lastContent = contentUpdates.at(-1);
-  assert.equal(lastContent[1], lastContent[2]);
   const indexedObjects = document.index.lines.reduce(
     (total, line) => total + line.noteCount + line.eventCount,
     0,
   );
-  assert.equal(lastContent[2], indexedObjects);
-  assert.ok(indexedObjects > 10_001);
-  assert.equal(installed.judgeLineList.some(isPlaceholderLine), false);
-  assert.equal(installed.judgeLineList[10_000].notes.length, 1);
+  const progressTotal = indexedObjects + document.index.lines.length;
+  assert.equal(lastContent[2], progressTotal, "progress totals stay index-derived");
+  assert.equal(lastContent[1], lastContent[2], "the last content tick is the whole chart");
 });
 
 test("document load waits for the music track before the first render", async () => {
@@ -132,6 +144,7 @@ test("document load waits for the music track before the first render", async ()
     currentChart: () => installed,
     currentAssets: () => assets,
     currentChartName: () => "chart.json",
+    currentLineIndex: () => 0,
     resolveDesktopSong: () => undefined,
     loadMusic: async () => {
       await audio.promise;

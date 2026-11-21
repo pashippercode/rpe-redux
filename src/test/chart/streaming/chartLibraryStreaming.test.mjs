@@ -100,6 +100,69 @@ test("library chart document opens from summary and chart frames", async () => {
   assert.equal(chartFingerprint(materialized), chartFingerprint(chart));
 });
 
+test("concurrent library line reads share one source batch", async () => {
+  const chart = createChart();
+  chart.META.name = "Shared batches";
+  chart.judgeLineList = Array.from({ length: 20 }, (_, index) => {
+    const line = createLine(`Line ${index}`);
+    line.notes = [createNote(1, index, 0.5)];
+    return line;
+  });
+  const text = serializeChart(chart);
+  const scan = scanChartJson(text);
+  const header = chartHeaderFromScan(scan);
+  const index = buildChartIndex(scan, new TempoMap(header.BPMList));
+  const frames = [
+    encodeJsonFrame(CHART_FRAME.header, header),
+    encodeJsonFrame(CHART_FRAME.index, index),
+    encodeJsonFrame(CHART_FRAME.end, {}),
+  ];
+  let batchReads = 0;
+  const library = {
+    async summary() {
+      return {
+        project: {
+          id: "project-1",
+          name: "Shared batches",
+          revision: 1,
+          group: "",
+          archived: false,
+          charter: "",
+          composer: "",
+          level: "",
+          noteCount: 20,
+          createdAt: "",
+          updatedAt: "",
+          size: text.length,
+        },
+      };
+    },
+    async assets() {
+      return { assets: [] };
+    },
+    assetUrl() {
+      return "";
+    },
+    async *chartStream() {
+      for (const frame of frames) {
+        yield frame;
+      }
+    },
+    async chartLines(_id, start, count) {
+      batchReads += 1;
+      const raw = scan.lineRanges
+        .slice(start, start + count)
+        .map((range) => scan.text.slice(range.start, range.end))
+        .join(",");
+      return { start, count, raw: `[${raw}]` };
+    },
+  };
+  const opened = await openLibraryChartDocument(library, "project-1");
+  const materialized = await opened.chartDocument.materializeAll();
+  assert.equal(batchReads, 1, "eight readers share the one 64-line batch");
+  assert.equal(materialized.judgeLineList.length, 20);
+});
+
 test("library save uses the streamed commit when chunks are supplied", async () => {
   const calls = [];
   const library = {

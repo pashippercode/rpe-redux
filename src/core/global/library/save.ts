@@ -17,6 +17,21 @@ import type { LibraryCommitResult, LocalLibrary } from "./client.ts";
 import type { LibraryViewState } from "./types.ts";
 import { throwIfAborted } from "../../utils/abort.ts";
 
+/** Advance progress as the streamed chart text is consumed by the library. */
+async function* trackChunkProgress(
+  chunks: AsyncIterable<string>,
+  totalBytes: number,
+  report: (value: number) => void,
+): AsyncIterable<string> {
+  let sent = 0;
+  for await (const chunk of chunks) {
+    sent += chunk.length;
+    const fraction = totalBytes > 0 ? Math.min(1, sent / totalBytes) : 0;
+    report(0.7 + fraction * 0.28);
+    yield chunk;
+  }
+}
+
 /** Input for one library save. */
 export interface LibrarySaveInput {
   library: LocalLibrary;
@@ -26,6 +41,8 @@ export interface LibrarySaveInput {
   chartJson: string;
   /** Chunked chart text; when present, the save uses the streamed commit. */
   chartChunks?: AsyncIterable<string>;
+  /** Approximate chart size, used to report chunk-write progress. */
+  chartBytes?: number;
   name: string;
   group?: string;
   assets: AssetMap;
@@ -176,7 +193,11 @@ export async function saveLibraryDocument(input: LibrarySaveInput): Promise<Libr
       ...(input.assetFolders ? { assetFolders: input.assetFolders } : {}),
     };
     const result = input.chartChunks
-      ? await input.library.commitStream(projectId, commitInput, input.chartChunks)
+      ? await input.library.commitStream(
+          projectId,
+          commitInput,
+          trackChunkProgress(input.chartChunks, input.chartBytes ?? 0, progress),
+        )
       : await input.library.commit(projectId, { ...commitInput, chartJson: input.chartJson });
     cleanupProjectId = "";
     progress(1);

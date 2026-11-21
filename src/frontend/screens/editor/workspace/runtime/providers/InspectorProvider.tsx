@@ -155,6 +155,12 @@ export function createInspectorRuntime(options: {
       });
       return;
     }
+    // The issue scan needs the whole line graph. A streamed document may still
+    // be materializing while the session is installed, so wait for the next
+    // publication after the last line lands.
+    if (document.unloadedLineCount() > 0) {
+      return;
+    }
     // A paged chart needs an async materialize step first; the request is
     // dropped when the document moved on while the snapshot was built, because
     // the newest notification already scheduled its own scan.

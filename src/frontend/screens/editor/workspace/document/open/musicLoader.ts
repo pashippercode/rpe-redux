@@ -10,7 +10,15 @@ type MusicSession = Pick<EditorSession, "chart" | "commitChart">;
 
 /** Audio, analysis, and session operations the music loader drives. */
 export interface MusicLoaderDependencies {
-  loadAudio(bytes: string | ArrayBuffer | Uint8Array, name: string): Promise<boolean>;
+  /**
+   * Decode the track; `onDecoded` fires once the buffer is playable, before the
+   * optional pitch stretcher finishes.
+   */
+  loadAudio(
+    bytes: string | ArrayBuffer | Uint8Array,
+    name: string,
+    onDecoded?: (buffer: AudioBuffer) => void,
+  ): Promise<boolean>;
   pause(): void;
   seek(seconds: number): void;
   chartSeconds(): number;
@@ -23,20 +31,40 @@ export interface MusicLoaderDependencies {
   setAsset(name: string, bytes: Uint8Array): void;
   setProgressDuration(duration: number): void;
   duration(): number;
-  queueSpectrum(source: Uint8Array | string): void;
+  /** Queue the scrubber spectrum; `immediate` skips the idle delay. */
+  queueSpectrum(source: Uint8Array | string, immediate?: boolean): void;
   renderTimelineMarkers(): void;
   commitLabel(): string;
   /** Announce a fully installed track after metadata and the transport restore. */
   onLoaded?(name: string): void;
 }
 
-/** Loads a track, restores the playhead, then starts background analysis. */
+/** Loads a track, restores the playhead, and starts analysis beside the open. */
 export function createMusicLoader(deps: MusicLoaderDependencies) {
   return async (bytes: Uint8Array | string, name: string, updateMetadata = true) => {
     const chartPosition = deps.chartSeconds();
     deps.pause();
     const loadingSession = deps.getSession();
-    const loaded = await deps.loadAudio(bytes, name);
+    let analysisStarted = false;
+    /**
+     * Start both analyses as soon as the decoded buffer exists.
+     *
+     * `decodeForAnalysis` reuses the playable buffer, so this is not a second
+     * decode. The worker work overlaps the chart and textures instead of
+     * starting after the whole open has settled.
+     */
+    const startAnalysis = (): void => {
+      if (analysisStarted) {
+        return;
+      }
+      analysisStarted = true;
+      deps.setAnalysisSource(bytes);
+      if (deps.analysisEnabled()) {
+        deps.ensureAnalysis().catch(deps.reportError);
+      }
+      deps.queueSpectrum(bytes, true);
+    };
+    const loaded = await deps.loadAudio(bytes, name, startAnalysis);
     if (!loaded || deps.getSession() !== loadingSession) {
       return;
     }
@@ -59,15 +87,10 @@ export function createMusicLoader(deps: MusicLoaderDependencies) {
         { normalized: true },
       );
     }
-    // Restore the transport before the waveform owns any work. The analysis is
-    // deliberately not awaited: playback is ready as soon as the decoded buffer
-    // is installed, and a later waveform completion must only repaint.
+    // Restore the transport before the waveform owns any paint work. Analysis
+    // may already be running from `onDecoded`; this call is a no-op then.
     deps.seek(chartPosition + deps.offsetSeconds());
     deps.onLoaded?.(name);
-    deps.setAnalysisSource(bytes);
-    if (deps.analysisEnabled()) {
-      deps.ensureAnalysis().catch(deps.reportError);
-    }
-    deps.queueSpectrum(bytes);
+    startAnalysis();
   };
 }
