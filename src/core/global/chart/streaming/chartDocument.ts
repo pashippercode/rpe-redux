@@ -13,7 +13,6 @@ import {
   combineContentFingerprint,
   headerContentFingerprint,
   lineContentFingerprint,
-  lineContentFingerprintParts,
   primeLineContentFingerprint,
 } from "../chartContentHash.ts";
 import { summarizeChartLine, summarizeChartLineIncremental } from "./chartLineSummary.ts";
@@ -181,6 +180,15 @@ export class ChartDocument {
   readonly chart: Chart;
   /** Optional release hook for a worker or source owned by the opener. */
   dispose?: () => void;
+  /**
+   * Start deferred background line-digest hydration.
+   *
+   * Browser openers publish this once the paged document exists. The open
+   * starts the pool before textures and audio, then waits for it before the
+   * first frame so the editor opens writable. Hosts whose index already carries
+   * digests leave it unset.
+   */
+  startFingerprintHydration?: () => void;
   private readonly lines: JudgeLine[];
   private readonly slots: LineSlot[];
   private tempo: TempoMap;
@@ -308,6 +316,23 @@ export class ChartDocument {
   }
 
   /**
+   * Seed the aggregate content fingerprint with a value the caller already
+   * computed from this exact content.
+   *
+   * A transaction plan computes the post-edit fingerprint while it is already
+   * walking the changed lines. Storing it here keeps the next history or
+   * coordinator read from mapping every slot again.
+   */
+  cacheFingerprint(value: string): void {
+    // While hydration is pending, the public value is a process-local token;
+    // never let a caller seed it over the eventual semantic digest.
+    if (!this.fingerprintReadyState) {
+      return;
+    }
+    this.fingerprintCache = value;
+  }
+
+  /**
    * Install one background-computed line digest without materializing siblings.
    *
    * The producer emits at most one seed per line, so an out-of-range or
@@ -361,6 +386,17 @@ export class ChartDocument {
       }
     }
     return indices;
+  }
+
+  /** Count lines that still need a provider read. */
+  unloadedLineCount(): number {
+    let count = 0;
+    for (const slot of this.slots) {
+      if (!slot.line) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   /** Ensure one line is materialized and return it. */
@@ -825,6 +861,12 @@ export class ChartDocument {
       slot.state = "invalid";
       throw new Error(`Invalid chart line ${index}`);
     }
+    // An edit, undo, or remote snapshot can install this slot while the
+    // provider read is in flight. The newer object owns the line now; installing
+    // the parsed source would silently replace it.
+    if (slot.line) {
+      return slot.line;
+    }
     if (slot.summary.flags & LINE_FLAG_INVALID) {
       slot.state = "invalid";
       throw new Error(`Invalid chart line ${index}`);
@@ -850,17 +892,11 @@ export class ChartDocument {
         }
       }
     }
-    // Stream workers publish the semantic line seed asynchronously. Do not
-    // hash the entire line a second time while materializing it: that would
-    // walk every note/event on the UI thread before the worker seed arrives.
-    // A local provider still computes value digests when no deferred seed is
-    // available, while a worker read keeps the materialization path parse-only.
-    const valueDigests =
-      typeof source === "string"
-        ? this.fingerprintReadyState
-          ? lineContentFingerprintParts(line, { includeValueDigests: true }).valueDigests
-          : undefined
-        : source.valueDigests;
+    // A worker read carries the semantic line seed produced off the UI thread.
+    // A plain string has no deferred seed; the index digest already identifies
+    // the clean line, so do not walk every note and event just to prime a
+    // copy-on-write cache that an edit can build on demand.
+    const valueDigests = typeof source === "string" ? undefined : source.valueDigests;
     this.installLine(index, line, "loaded", raw, valueDigests);
     this.evict();
     return line;

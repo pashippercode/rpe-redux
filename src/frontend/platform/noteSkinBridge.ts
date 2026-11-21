@@ -21,6 +21,7 @@ import {
 } from "../../core/platform/desktop/noteSkinPackages.ts";
 import { packageSlug, type PackageName } from "../../core/utils/packageName.ts";
 import { t } from "../../i18n/index.ts";
+import bundledSkinInfo from "../../assets/skins/built_in_original/info.yml?raw";
 import { NOTE_SKIN_EVENT } from "./noteSkinEvents.ts";
 
 export { NOTE_SKIN_EVENT } from "./noteSkinEvents.ts";
@@ -101,6 +102,13 @@ async function loadBundledDefaultSkinAt(base: URL): Promise<LoadedNoteSkin> {
   const optional = new Set(["event_hold.png", "line.png"]);
   await Promise.all(
     BUNDLED_PHIRA_FILES.map(async (name) => {
+      // A portable host can answer an unknown asset extension with the SPA
+      // index (200 text/html), so fetching the manifest silently breaks the
+      // whole skin. The manifest is compiled with the app instead.
+      if (name === "info.yml") {
+        files.set(name, new TextEncoder().encode(bundledSkinInfo));
+        return;
+      }
       const response = await fetch(new URL(name, base));
       if (!response.ok) {
         if (optional.has(name)) {

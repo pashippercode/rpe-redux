@@ -514,6 +514,8 @@ test("off-thread opener falls back to in-process scanning without workers", asyn
   const bytes = new TextEncoder().encode(text).buffer;
   const opened = await openChartStreamOffThread(bytes, "test.json");
   try {
+    opened.document.startFingerprintHydration?.();
+    await opened.document.whenFingerprintReady();
     const materialized = await opened.document.materializeAll();
     assert.equal(chartFingerprint(materialized), chartFingerprint(chart));
   } finally {

@@ -131,6 +131,8 @@ class LibraryChartLineProvider implements ChartLineProvider {
   private readonly library: LocalLibrary;
   private readonly id: string;
   private readonly cache = new Map<number, string>();
+  /** In-flight reads keyed by batch start, shared by concurrent line readers. */
+  private readonly pendingBatches = new Map<number, Promise<Map<number, string>>>();
   private cachedChars = 0;
   private readonly batch = 64;
 
@@ -150,20 +152,38 @@ class LibraryChartLineProvider implements ChartLineProvider {
       return cached;
     }
     const start = Math.floor(index / this.batch) * this.batch;
-    const count = Math.min(this.batch, this.lineCount - start);
-    const batch = await this.library.chartLines(this.id, start, count);
-    const ranges = scanJsonArrayRanges(batch.raw);
-    let requested: string | undefined;
-    for (let offset = 0; offset < ranges.length; offset++) {
-      const range = ranges[offset];
-      const lineIndex = batch.start + offset;
-      const raw = batch.raw.slice(range.start, range.end);
-      if (lineIndex === index) {
-        requested = raw;
-      }
-      this.cacheLine(lineIndex, raw);
+    // Eight line readers start together. Sharing one request per source batch
+    // keeps a dense open from downloading the same 64 lines eight times.
+    const lines = await this.readBatch(start);
+    return lines.get(index) ?? this.cache.get(index);
+  }
+
+  /** Fetch one batch once and fan the decoded lines out to every waiter. */
+  private readBatch(start: number): Promise<Map<number, string>> {
+    const pending = this.pendingBatches.get(start);
+    if (pending) {
+      return pending;
     }
-    return requested ?? this.cache.get(index);
+    const count = Math.min(this.batch, this.lineCount - start);
+    const request = this.library
+      .chartLines(this.id, start, count)
+      .then((batch) => {
+        const ranges = scanJsonArrayRanges(batch.raw);
+        const lines = new Map<number, string>();
+        for (let offset = 0; offset < ranges.length; offset++) {
+          const range = ranges[offset];
+          const lineIndex = batch.start + offset;
+          const raw = batch.raw.slice(range.start, range.end);
+          lines.set(lineIndex, raw);
+          this.cacheLine(lineIndex, raw);
+        }
+        return lines;
+      })
+      .finally(() => {
+        this.pendingBatches.delete(start);
+      });
+    this.pendingBatches.set(start, request);
+    return request;
   }
 
   /** Store one raw line and trim the oldest entries past the cache budget. */

@@ -3,6 +3,7 @@
  * canonical fingerprint and materializer without importing the streaming layer.
  */
 import type { Chart } from "../chart.ts";
+import type { ChartIndex } from "./chartStreamTypes.ts";
 
 /** The document operations a chart facade exposes to shared readers. */
 export interface RegisteredChartDocument {
@@ -12,6 +13,10 @@ export interface RegisteredChartDocument {
   materializeAll(): Promise<Chart>;
   /** Write the chart as JSON chunks when the source supports it. */
   serialize?(sink: (chunk: string) => Promise<void> | void): Promise<void>;
+  /** Monotonic paged content revision; absent on an eager chart snapshot. */
+  readonly contentRevision?: number;
+  /** Line summaries for a paged source; absent when the source has no index. */
+  readonly index?: ChartIndex | null;
 }
 
 const documents = new WeakMap<object, RegisteredChartDocument>();

@@ -124,6 +124,7 @@ export function summarizeChartLine(
       byteLength,
       noteCount: 0,
       eventCount: 0,
+      speedEventCount: 0,
       startSeconds: null,
       endSeconds: null,
       digest,
@@ -138,6 +139,7 @@ export function summarizeChartLine(
   const bounds = { start: Number.POSITIVE_INFINITY, end: Number.NEGATIVE_INFINITY, timed: false };
   const intervals: [number, number][] = [];
   let eventCount = 0;
+  let speedEventCount = 0;
   let hasAlphaEvents = false;
   let lastAlphaEnd: number | null = null;
   let lastAlphaEndValue = Number.NaN;
@@ -177,6 +179,9 @@ export function summarizeChartLine(
         continue;
       }
       eventCount += events.length;
+      if (type === "speedEvents") {
+        speedEventCount += events.length;
+      }
       if (type === "paintEvents" && events.length) {
         hasShader = true;
       }
@@ -239,6 +244,7 @@ export function summarizeChartLine(
     byteLength,
     noteCount,
     eventCount,
+    speedEventCount,
     startSeconds,
     endSeconds,
     intervals: mergeIntervals(intervals),
@@ -271,10 +277,12 @@ export function summarizeChartLineIncremental(
     line.eventLayers === previousLine.eventLayers &&
     line.extended === previousLine.extended;
   let eventCount = previous.eventCount;
+  let speedEventCount = previous.speedEventCount ?? 0;
   let hasShader = (previous.flags & LINE_FLAG_SHADER) !== 0;
   if (!eventSourcesUnchanged) {
     const layers = [...(Array.isArray(line.eventLayers) ? line.eventLayers : []), line.extended];
     eventCount = 0;
+    speedEventCount = 0;
     hasShader = false;
     for (const layer of layers) {
       if (!isRecord(layer)) {
@@ -284,6 +292,9 @@ export function summarizeChartLineIncremental(
         const events = layer[type];
         if (Array.isArray(events)) {
           eventCount += events.length;
+          if (type === "speedEvents") {
+            speedEventCount += events.length;
+          }
           hasShader ||= type === "paintEvents" && events.length > 0;
         }
       }
@@ -306,6 +317,7 @@ export function summarizeChartLineIncremental(
     index,
     noteCount: notes.length,
     eventCount,
+    speedEventCount,
     startSeconds: null,
     endSeconds: null,
     intervals: undefined,

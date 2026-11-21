@@ -4,6 +4,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { EXPORT_DOCUMENT_EVENT } from "../../../../../../core/shell/shellEventNames.ts";
 import { assetPath, resourceReferences } from "../../../../../../core/global/document/resources.ts";
 import type { LoadTask } from "../../../../../../core/global/document/loading.ts";
+import type { TempoMap } from "../../../../../../core/global/chart/timing/tempo.ts";
 import type { ChartDiagnostic } from "../../../../../../core/global/chart/diagnostics.ts";
 import {
   createChart,
@@ -251,6 +252,8 @@ export function createDocumentRuntime(options: {
   renderTimelineMarkers(): void;
   chartSeconds(): number;
   offsetSeconds(): number;
+  /** Active tempo map for the preview scene prepared during an open. */
+  tempo(): TempoMap;
   waitForFirstRender(task: LoadTask): Promise<void>;
 }): DocumentRuntime {
   const getSession = () => options.session.current;
@@ -392,7 +395,7 @@ export function createDocumentRuntime(options: {
   };
 
   const loadMusic = createMusicLoader({
-    loadAudio: (bytes, name) => preview.audio.load(bytes, name),
+    loadAudio: (bytes, name, onDecoded) => preview.audio.load(bytes, name, { onDecoded }),
     pause: () => playback.playback.pause(),
     seek: (seconds) => playback.playback.seek(seconds),
     chartSeconds: options.chartSeconds,
@@ -405,7 +408,8 @@ export function createDocumentRuntime(options: {
     setAsset: (name, bytes) => getAssets().set(name, bytes),
     setProgressDuration: (duration) => setProgressDuration(options.ui.progress, duration),
     duration: () => preview.audio.duration,
-    queueSpectrum: timeline.scrubberSpectrumLoader.queue,
+    queueSpectrum: (source, immediate) =>
+      timeline.scrubberSpectrumLoader.queue(source, { immediate }),
     renderTimelineMarkers: options.renderTimelineMarkers,
     commitLabel: () => t("editor.app.commit.selectMusic"),
     onLoaded: () => {
@@ -444,6 +448,7 @@ export function createDocumentRuntime(options: {
     currentChart: () => getSession().chart,
     currentAssets: getAssets,
     currentChartName: getChartName,
+    currentLineIndex: () => getSession().lineIndex,
     resolveDesktopSong: (song, assets, name) =>
       options.documents?.assets?.url(assetPath(assets, song, name) ?? song),
     loadMusic,
@@ -456,6 +461,14 @@ export function createDocumentRuntime(options: {
     selectLine: (index) => getSession().selectLine(index),
     invalidate: options.invalidate,
     waitForFirstRender: options.waitForFirstRender,
+    preparePreview: async (task) => {
+      const session = getSession();
+      await preview.realtimePreview.prepareScene(
+        session.chart,
+        options.tempo(),
+        (completed, total) => task.update("render", completed, Math.max(total, 1)),
+      );
+    },
     reportError: options.reportError,
   });
   const documentLeases = createDocumentLeaseManager({

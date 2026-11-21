@@ -11,6 +11,52 @@ import { createMusicLoader } from "../../../frontend/screens/editor/workspace/do
 /** One shared session object so the loader's identity check passes. */
 const session = { chart: { META: {} }, commitChart: () => undefined };
 
+test("analysis starts when the playable buffer is installed", async () => {
+  const events = [];
+  const deps = {
+    async loadAudio(_bytes, _name, onDecoded) {
+      events.push("audio-start");
+      onDecoded({});
+      events.push("audio-done");
+      return true;
+    },
+    pause: () => events.push("pause"),
+    seek: () => events.push("seek"),
+    chartSeconds: () => 0,
+    offsetSeconds: () => 0,
+    getSession: () => session,
+    setAnalysisSource: () => events.push("analysis-source"),
+    analysisEnabled: () => true,
+    ensureAnalysis: () => {
+      events.push("analysis-start");
+      return Promise.resolve();
+    },
+    reportError: () => undefined,
+    setAsset: () => events.push("asset"),
+    setProgressDuration: () => events.push("duration"),
+    duration: () => 100,
+    queueSpectrum: (_source, immediate) =>
+      events.push(immediate ? "spectrum-immediate" : "spectrum"),
+    renderTimelineMarkers: () => events.push("markers"),
+    commitLabel: () => "label",
+    onLoaded: () => events.push("loaded"),
+  };
+  await createMusicLoader(deps)(new Uint8Array([1]), "song.mp3", false);
+  assert.deepEqual(events, [
+    "pause",
+    "audio-start",
+    "analysis-source",
+    "analysis-start",
+    "spectrum-immediate",
+    "audio-done",
+    "asset",
+    "duration",
+    "markers",
+    "seek",
+    "loaded",
+  ]);
+});
+
 test("music load restores the transport before starting unawaited analysis", async () => {
   const events = [];
   let finishAnalysis = () => {};

@@ -9,8 +9,6 @@ import {
   chartHeaderFromScan,
 } from "../../../../../../core/global/chart/streaming/chartLineSummary.ts";
 import { TempoMap } from "../../../../../../core/global/chart/timing/tempo.ts";
-import { lineRevisionSeedFromJson } from "../../../../../../core/global/chart/chartContentHash.ts";
-import { yieldToHost } from "../../../../../../core/utils/yieldToHost.ts";
 import type {
   ChartWorkerRequest,
   ChartWorkerResponse,
@@ -34,8 +32,14 @@ let session: StreamSession | null = null;
 let pendingChunks: Uint8Array[] = [];
 let pendingBytes = 0;
 let fingerprintsStarted = false;
+/** Resolves the fingerprint handoff after the host's pool drained one batch. */
+let nextFingerprintBatch: (() => void) | null = null;
 /** Match the native document host's chart ceiling. */
 const MAX_STREAM_BYTES = 512 * 1024 * 1024;
+/** Lines per fingerprint handoff; one dense line may fill a batch alone. */
+const FINGERPRINT_BATCH_LINES = 8;
+/** Raw source bytes per fingerprint handoff. */
+const FINGERPRINT_BATCH_BYTES = 2 * 1024 * 1024;
 
 /** Send one worker response. */
 function reply(message: ChartWorkerResponse): void {
@@ -47,27 +51,46 @@ function openSource(request: Extract<ChartWorkerRequest, { kind: "open" }>): voi
   pendingChunks = [];
   pendingBytes = 0;
   fingerprintsStarted = false;
+  nextFingerprintBatch = null;
   if (request.bytes) {
     pendingChunks.push(new Uint8Array(request.bytes));
     pendingBytes = request.bytes.byteLength;
   }
 }
 
-/** Compute semantic line seeds after the lightweight index is published. */
+/**
+ * Hand raw line sources to the fingerprint pool.
+ *
+ * The stream worker deliberately performs no hashing: a single dense line can
+ * take long enough to stall every line request queued behind it. The host fans
+ * these batches out across workers and applies the returned seeds.
+ */
 async function fingerprintSource(
   id: number,
   text: string,
   ranges: readonly ChartLineRange[],
 ): Promise<void> {
-  const batchSize = 8;
-  for (let start = 0; start < ranges.length; start += batchSize) {
-    const seeds = [];
-    for (let index = start; index < Math.min(ranges.length, start + batchSize); index += 1) {
-      const range = ranges[index];
-      seeds.push(lineRevisionSeedFromJson(text.slice(range.start, range.end)));
+  let start = 0;
+  while (start < ranges.length) {
+    const raws: (string | null)[] = [];
+    let bytes = 0;
+    while (
+      start + raws.length < ranges.length &&
+      raws.length < FINGERPRINT_BATCH_LINES &&
+      (raws.length === 0 || bytes < FINGERPRINT_BATCH_BYTES)
+    ) {
+      const range = ranges[start + raws.length];
+      const raw = range ? text.slice(range.start, range.end) : null;
+      raws.push(raw);
+      bytes += raw?.length ?? 0;
     }
-    reply({ id, kind: "fingerprints", start, seeds });
-    await yieldToHost();
+    reply({ id, kind: "fingerprint-lines", start, raws });
+    start += raws.length;
+    // One batch in flight bounds copied raw text and lets line reads overtake
+    // the digest pass. The host acknowledges after every hash in the batch.
+    await new Promise<void>((resolve) => {
+      nextFingerprintBatch = resolve;
+    });
   }
   reply({ id, kind: "fingerprints-done" });
 }
@@ -158,6 +181,12 @@ workerScope.onmessage = (event) => {
   }
   if (request.kind === "fingerprints") {
     startFingerprintSource(request.id);
+    return;
+  }
+  if (request.kind === "fingerprint-next") {
+    const resolve = nextFingerprintBatch;
+    nextFingerprintBatch = null;
+    resolve?.();
     return;
   }
   if (request.kind === "line") {

@@ -1069,6 +1069,7 @@ export function createEditorAssembly(
     applySessionSettings: () => sessionSettings.apply?.(),
     ui,
     document: documentState,
+    tempo: tempo.get,
     resources: {
       preview: {
         audio: previewRuntime.audio,

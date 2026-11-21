@@ -138,11 +138,11 @@ export function createScrubberSpectrumLoader({
   }
 
   /** Schedules decode and analysis for a new source, discarding any older request. */
-  function queue(source: SpectrumSource): void {
+  function queue(source: SpectrumSource, options: { immediate?: boolean } = {}): void {
     const request = (revision += 1);
     stopActiveWorker();
     spectrum.clear();
-    schedule(() => {
+    const run = () => {
       void (async () => {
         const buffer = await audio.decodeForAnalysis(source);
         if (!buffer || request !== revision) {
@@ -170,7 +170,15 @@ export function createScrubberSpectrumLoader({
       })().catch(() => {
         // Spectrum failures are non-fatal; playback continues without artwork.
       });
-    });
+    };
+    // A document open starts the spectrum while the chart is still loading;
+    // waiting for idle would push it after the first paint and its decode would
+    // then compete with the editor instead of the loading surface.
+    if (options.immediate) {
+      run();
+    } else {
+      schedule(run);
+    }
   }
 
   return { clear, queue, dispose: clear };

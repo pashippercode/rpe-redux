@@ -954,8 +954,16 @@ export class EditorSession extends EventTarget {
       this.notify();
       return false;
     }
+    const changedLineIndexes = this.changedLineIndexes(
+      this.chart,
+      before.chart,
+      options.changedLineIndexes,
+    );
     try {
-      assertNoNewNegativeBeatRanges(this.chart, before.chart);
+      // Only lines this commit replaced can introduce a negative beat. Walking
+      // every untouched line would make a one-note CRUD edit scale with the
+      // whole chart.
+      assertNoNewNegativeBeatRanges(this.chart, before.chart, changedLineIndexes);
     } catch {
       this.notify();
       return false;
@@ -987,11 +995,6 @@ export class EditorSession extends EventTarget {
       ? remapSelection(this.chart, before.chart, currentSelection)
       : null;
     const afterSelection = options.afterSelection ?? remappedSelection ?? currentSelection;
-    const changedLineIndexes = this.changedLineIndexes(
-      this.chart,
-      before.chart,
-      options.changedLineIndexes,
-    );
     // A transaction has already checked its revisions before entering this
     // boundary. Extension hooks may replace the chart, so only reuse those
     // tokens when no hook can invalidate the planned fingerprint.

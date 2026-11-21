@@ -149,6 +149,9 @@ export async function openChartDocumentFromArchive(
     } else if (message.kind === "fingerprints-done") {
       fingerprintsDone = true;
       document?.completeFingerprintHydration();
+    } else if (message.kind === "fingerprint-lines") {
+      // The archive worker hashes its own slices; raw fingerprint handoff is
+      // exclusive to the plain chart stream adapter.
     } else if (message.kind === "line") {
       provider?.accept(message);
     } else {
@@ -198,12 +201,22 @@ export async function openChartDocumentFromArchive(
   if (fingerprintsDone) {
     document.completeFingerprintHydration();
   }
-  worker.postMessage({ id: sessionId, kind: "fingerprints" });
+  const openedDocument = document;
+  let fingerprintsRequested = false;
+  // Archive charts also start the digest pass once the document is installed.
+  // The load waits for it before the first frame, so the editor opens writable.
+  openedDocument.startFingerprintHydration = () => {
+    if (fingerprintsRequested) {
+      return;
+    }
+    fingerprintsRequested = true;
+    worker.postMessage({ id: sessionId, kind: "fingerprints" });
+  };
   const dispose = () => {
     provider?.close();
     worker.postMessage({ id: sessionId, kind: "close" });
     worker.terminate();
   };
-  document.dispose = dispose;
-  return { chartDocument: document, dispose };
+  openedDocument.dispose = dispose;
+  return { chartDocument: openedDocument, dispose };
 }
