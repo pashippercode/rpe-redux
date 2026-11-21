@@ -206,8 +206,8 @@ export class Preview {
   private drawCollectGeometry = false;
   // `declare` fields are assigned by the constructor or methods; this adds types only.
   declare canvas: HTMLCanvasElement;
-  /** A fully prepared scene waiting for the first draw after a document open. */
-  private preparedScene: SceneRuntime | null = null;
+  /** Force the next draw to refresh scene-derived collections after an open. */
+  private sceneRefreshPending = false;
   declare scene: SceneRuntime;
   declare shaderRuntime: ShaderRuntime;
   declare shaderPipeline: ShaderPipeline;
@@ -352,7 +352,7 @@ export class Preview {
     this.lastFrame = null;
     this.staticGuideProjection = null;
     this.lastDocumentRevision = null;
-    this.preparedScene = null;
+    this.sceneRefreshPending = false;
     this.scene.clear();
     this.chart = null;
     this.samplingFocus = null;
@@ -1288,7 +1288,14 @@ export class Preview {
       }
       await yieldToHost();
     }
-    this.preparedScene = scene;
+    // Publish the complete scene immediately. Waiting for the next draw to
+    // swap it left the live surface sampling the previous empty runtime when
+    // the first frame landed before the preview became visible.
+    this.scene = scene;
+    this.sceneRefreshPending = true;
+    this.lastFrame = null;
+    this.lastDrawRequest = null;
+    this.invalidate?.();
   }
 
   /**
@@ -1308,20 +1315,15 @@ export class Preview {
       return;
     }
     const drawStarted = performance.now();
-    let preparedSceneUsed = false;
-    const preparedScene = this.preparedScene;
-    if (preparedScene && preparedScene.chart === chart && preparedScene.tempo === tempo) {
-      this.scene = preparedScene;
-      this.preparedScene = null;
-      preparedSceneUsed = true;
-    }
+    const refreshScene = this.sceneRefreshPending;
+    this.sceneRefreshPending = false;
     const previousTempo = this.scene.tempo;
     const revisionChanged =
       options.documentRevision !== undefined &&
       this.lastDocumentRevision !== options.documentRevision;
     const pendingSceneCompile = this.scene.hasDeferredCompile;
     const chartChanged =
-      preparedSceneUsed ||
+      refreshScene ||
       this.scene.chart !== chart ||
       previousTempo !== tempo ||
       revisionChanged ||

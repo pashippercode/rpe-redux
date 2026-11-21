@@ -14,6 +14,7 @@ import { TimelineThumbnail } from "../../timeline/overview/timelineThumbnail.ts"
 import { createLineInfoController } from "../../stage/lineInfo/lineInfoController.ts";
 import { isDesktop } from "../../../../../../core/platform/environment.ts";
 import { values } from "../../../../../../core/state/values.ts";
+import { displayValues } from "../../../../settings/editorDisplaySettings.ts";
 import { readCustomBackground } from "../../../../../platform/desktop/customBackground.ts";
 import { t } from "../../../../../../i18n/index.ts";
 import {
@@ -163,11 +164,35 @@ export function createPreviewRuntime(options: {
   const removeCurvePreviewBinding = curvePreviewMode.subscribe(() => refreshCurvePreview(true));
   // Underlay opacity follows which authoring regions share the stage. That is
   // not part of the chart/time frame request, so a region change must drop the
-  // cached preview frame and request a repaint at the same moment.
-  const removeRegionBinding = subscribeToEditorRegions(() => {
+  // cached preview frame, update visibility, and request a repaint at the same
+  // moment. The initial value matters: a preview that starts invisible never
+  // paints its note batch, even after the region changes later.
+  const refreshRegionVisibility = () => {
+    const showNotes = Boolean(displayValues.showNotes.get());
+    const showEvents = Boolean(displayValues.showEvents.get());
+    const showPreview = Boolean(displayValues.previewEnabled.get());
+    const authoringVisible = !curvePreviewMode.get() && (showNotes || showEvents);
+    const regionVisible = previewVisibleForRegions({
+      showNotes,
+      showEvents,
+      showPreview,
+      multiLineActive: false,
+      multiLineMode: "notes",
+      multiLineMerge: false,
+    });
+    realtimePreview.visible = curvePreviewMode.get() || regionVisible;
+    realtimePreview.forceOpaque =
+      freeCameraState.get().active || curvePreviewMode.get() || !authoringVisible;
     realtimePreview.invalidateFrame();
     options.invalidate();
-  });
+  };
+  const removeRegionBinding = subscribeToEditorRegions(refreshRegionVisibility);
+  const removeNotesVisibilityBinding = displayValues.showNotes.subscribe(refreshRegionVisibility);
+  const removeEventsVisibilityBinding =
+    displayValues.showEvents.subscribe(refreshRegionVisibility);
+  const removePreviewVisibilityBinding =
+    displayValues.previewEnabled.subscribe(refreshRegionVisibility);
+  refreshRegionVisibility();
   // The underlay is the only visible layer in free camera. Every pan or zoom
   // step repaints the chart content, background, and frame outline.
   const initialFreeCamera = freeCameraState.get();
@@ -336,6 +361,9 @@ export function createPreviewRuntime(options: {
     dispose() {
       removeCurvePreviewBinding();
       removeRegionBinding();
+      removeNotesVisibilityBinding();
+      removeEventsVisibilityBinding();
+      removePreviewVisibilityBinding();
       removeFreeCameraBinding();
       removeNoiseBinding();
       removeBackgroundVolume();
