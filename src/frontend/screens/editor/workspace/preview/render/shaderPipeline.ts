@@ -51,6 +51,17 @@ export function shaderTextureSize(
   };
 }
 
+/**
+ * Logical size of one drawn frame.
+ *
+ * Batches that share this pipeline's canvas place geometry in this space, so the
+ * pass must size its texture and uniforms from the same numbers.
+ */
+export interface ShaderFrameSize {
+  readonly width: number;
+  readonly height: number;
+}
+
 /** Display rectangle: the preview viewport or source-canvas bounds. */
 export interface ShaderViewportRect {
   left: number;
@@ -1015,6 +1026,9 @@ export class ShaderPipeline {
    * revision reuses the uploaded texture. `inputLayer` is rendered into the
    * transparent overlay texture when it shares this pipeline's WebGL2 context,
    * then uses the same GPU composite equation as the Canvas overlay path.
+   * `frameSize` is the logical size the frame was drawn in; pass it whenever the
+   * caller already owns that number so the target texture and every uniform in
+   * this pass use one coordinate space instead of a second measurement.
    */
   render(
     sourceCanvas: HTMLCanvasElement,
@@ -1026,6 +1040,7 @@ export class ShaderPipeline {
     sourceRevision?: number,
     overlayCanvas?: HTMLCanvasElement | null,
     inputLayer?: ShaderInputLayer | null,
+    frameSize?: ShaderFrameSize | null,
   ): boolean {
     renderProfileMark("preview.shader.render.start");
     this.lastFrameMetrics.sourceUploadMs = 0;
@@ -1035,8 +1050,10 @@ export class ShaderPipeline {
       return false;
     }
     const gl = this.context();
-    const measurement = measureCanvas(sourceCanvas);
     const fallbackRatio = canvasPixelRatio();
+    const measured = measureCanvas(sourceCanvas);
+    const measurement =
+      frameSize && frameSize.width > 0 && frameSize.height > 0 ? frameSize : measured;
     const displayWidth =
       measurement.width > 0 ? measurement.width : sourceCanvas.width / fallbackRatio;
     const displayHeight =

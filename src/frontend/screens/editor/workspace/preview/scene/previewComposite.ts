@@ -92,6 +92,7 @@ export function drawComposite(
       sourceRevision: frame.shaderSourceRevision,
       overlayCanvas: shaderOverlay,
       inputLayer: shaderInput,
+      frameSize: { width: frame.width, height: frame.height },
     });
     if (surface.shaderCanvas) {
       surface.display.setShaderVisible(shaderRendered);
