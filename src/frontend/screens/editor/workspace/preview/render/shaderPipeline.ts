@@ -1115,11 +1115,7 @@ export class ShaderPipeline {
       measurement.width > 0 ? measurement.width : sourceCanvas.width / fallbackRatio;
     const displayHeight =
       measurement.height > 0 ? measurement.height : sourceCanvas.height / fallbackRatio;
-    const { width, height } = this.allocateTarget(
-      targetCanvas,
-      displayWidth,
-      displayHeight,
-    );
+    const { width, height } = this.allocateTarget(targetCanvas, displayWidth, displayHeight);
     const view: ShaderView = viewport ?? {
       left: 0,
       top: 0,

@@ -500,10 +500,7 @@ export class NoteBatch {
       : 1;
     const backing = this.sharedSurface
       ? this.adoptSharedSurface(width, height)
-      : this.backend.resize(
-          { width, height },
-          Math.max(1, canvasPixelRatio() * safeScale),
-        );
+      : this.backend.resize({ width, height }, Math.max(1, canvasPixelRatio() * safeScale));
     if (!backing || !this.backend.begin(true)) {
       this.active = false;
       this.reportState();
@@ -540,10 +537,7 @@ export class NoteBatch {
    * rect. Resizing from here for the device pixel ratio would clear the frame
    * and force the pipeline to reallocate every texture.
    */
-  private adoptSharedSurface(
-    width: number,
-    height: number,
-  ): RenderSurfaceFrame | null {
+  private adoptSharedSurface(width: number, height: number): RenderSurfaceFrame | null {
     const backend = this.backend;
     if (!backend) {
       return null;

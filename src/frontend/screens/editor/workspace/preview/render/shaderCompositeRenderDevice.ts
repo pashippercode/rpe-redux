@@ -34,6 +34,20 @@ export class ShaderCompositeRenderDevice implements RenderDevice<ShaderComposite
 
   /** Submit one shader packet and return whether a visible pass was rendered. */
   render(packet: ShaderCompositeRenderPacket): boolean {
+    if (packet.frameSize != null) {
+      return this.pipeline.render(
+        packet.sourceCanvas,
+        packet.targetCanvas,
+        packet.passes,
+        packet.seconds,
+        packet.sourceFor,
+        packet.viewport,
+        packet.sourceRevision,
+        packet.overlayCanvas,
+        packet.inputLayer ?? null,
+        packet.frameSize,
+      );
+    }
     if (!packet.inputLayer) {
       return this.pipeline.render(
         packet.sourceCanvas,
@@ -44,8 +58,6 @@ export class ShaderCompositeRenderDevice implements RenderDevice<ShaderComposite
         packet.viewport,
         packet.sourceRevision,
         packet.overlayCanvas,
-        null,
-        packet.frameSize,
       );
     }
     return this.pipeline.render(
@@ -58,7 +70,6 @@ export class ShaderCompositeRenderDevice implements RenderDevice<ShaderComposite
       packet.sourceRevision,
       packet.overlayCanvas,
       packet.inputLayer,
-      packet.frameSize,
     );
   }
 
