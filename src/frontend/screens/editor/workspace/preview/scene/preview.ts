@@ -14,7 +14,11 @@ import {
 } from "./viewport.ts";
 import type { PreviewViewport } from "./viewport.ts";
 import { PreviewCameraTracker, previewCameraView, type PreviewCamera } from "./previewCamera.ts";
-import { linePasses, type RenderPass } from "../drawing/previewLines.ts";
+import {
+  lineBatchable as chartLineBatchable,
+  linePasses,
+  type RenderPass,
+} from "../drawing/previewLines.ts";
 import { PREVIEW_LOGICAL_SIZE } from "./constants.ts";
 import { lineGuides, type LineGuide } from "../drawing/guides.ts";
 import { readShaderSource } from "../../../../../platform/shaderSource.ts";
@@ -923,8 +927,8 @@ export class Preview {
   /**
    * Cache whether every painted line can share the default line texture batch.
    *
-   * Custom textures and text lines keep the Canvas path so their relative paint
-   * order is unchanged. The answer only changes with the chart or skin bitmap.
+   * Custom textures keep the Canvas path so their relative paint order is
+   * unchanged. The answer only changes with the chart or skin bitmap.
    */
   private updateLineBatch(chart: Chart, contentRevision: number | null): void {
     const skin = this.skin ?? null;
@@ -952,11 +956,7 @@ export class Preview {
     this.lineBatchSkin = skin;
     this.lineBatchRevision = revision;
     this.lineBatchContentRevision = contentRevision;
-    const lines = chart.judgeLineList ?? [];
-    this.lineBatchable = lines.every(
-      (line) =>
-        !line.extended?.textEvents?.length && (!line.Texture || line.Texture === "line.png"),
-    );
+    this.lineBatchable = chartLineBatchable(chart.judgeLineList ?? []);
   }
 
   /** Prepare the clipped preview canvas and paint its chart background. */

@@ -15,7 +15,7 @@ import {
   type CanvasPalette,
 } from "../../../canvas/palette.ts";
 import { noteIsAbove } from "../../../../../../core/global/chart/chart.ts";
-import { drawLine } from "./previewGuides.ts";
+import { drawLine, drawLineLyrics } from "./previewGuides.ts";
 import { preparedLineCache, type PreparedPreviewLine } from "./preparedLineCache.ts";
 import { passesForSampling } from "./previewPassOrder.ts";
 import type { JudgeLine, JudgeLineNote } from "../../../../../../core/global/chart/chart.ts";
@@ -85,6 +85,20 @@ function lineGeometry(
 /** One draw step of a frame: a judge line, or the notes and holds above them. */
 export type RenderPass =
   { kind: "line"; index: number; depth: number } | { kind: "hold" | "note"; depth: number };
+
+/**
+ * Whether every judge line can be painted by the shared default-texture batch.
+ *
+ * Only the texture decides it: a line carrying `line.png` draws the same quad
+ * the batch handles, while a custom image needs its own sprite. Lyric subtitles
+ * (`textEvents`) are painted by their own pass and say nothing about how the
+ * line is drawn, so they must not be part of this answer — the batch is the only
+ * renderer the shader path keeps visible, so routing one lined chart to the
+ * Canvas copy makes every judge line disappear behind the shader layer.
+ */
+export function lineBatchable(lines: readonly JudgeLine[]): boolean {
+  return lines.every((line) => !line.Texture || line.Texture === "line.png");
+}
 
 /**
  * Depth-sorted draw order: judge lines by `zOrder`, then Holds, then note heads.
@@ -842,7 +856,11 @@ export function drawLinePasses(
         context.rotate(rotation);
       }
       if (pass.kind === "line") {
-        if (!drawnByBatch) {
+        // A batch instance covers the line's skin quad but not its lyrics: a
+        // lined judge line paints only its subtitle text on the Canvas pass, so
+        // the text still has to run even when the quad came from the batch.
+        const canvasLyrics = drawnByBatch && Boolean(runtime.line.extended?.textEvents?.length);
+        if (!drawnByBatch || canvasLyrics) {
           const canvasState =
             samplingAlpha === null && effectiveLineColor === state.color
               ? state
@@ -855,7 +873,11 @@ export function drawLinePasses(
                     effectiveLineColor[3] ?? 1,
                   ],
                 };
-          drawLine(surface, context, runtime.line, canvasState, scale);
+          if (canvasLyrics) {
+            drawLineLyrics(context, runtime.line, canvasState, scale);
+          } else {
+            drawLine(surface, context, runtime.line, canvasState, scale);
+          }
         }
       } else {
         const isHoldPass = pass.kind === "hold";
