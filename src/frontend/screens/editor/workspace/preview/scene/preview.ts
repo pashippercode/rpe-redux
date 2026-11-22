@@ -1165,6 +1165,9 @@ export class Preview {
     this.noteHitAreas.length = 0;
     this.lineFrames.length = 0;
     const notesStarted = performance.now();
+    if (this.sharedNoteBatch && this.applyShaders && frame.shaderEffects.length > 0) {
+      this.shaderPipeline.prepareTarget(this.shaderCanvas, frame.width, frame.height);
+    }
     const nextRetainedLineKey = this.retainedLineKey(frame);
     const retainStaticLines =
       nextRetainedLineKey !== null &&

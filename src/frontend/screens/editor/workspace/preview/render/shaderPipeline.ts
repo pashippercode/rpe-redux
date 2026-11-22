@@ -1018,6 +1018,63 @@ export class ShaderPipeline {
   }
 
   /**
+   * Size the target canvas and every pass texture for one logical frame.
+   *
+   * Batches that share this canvas draw after this returns, so the surface they
+   * adopt and the uniforms this pass uploads describe one space. Reallocating
+   * drops the upload cache: the retained upload belongs to the old textures.
+   */
+  allocateTarget(
+    targetCanvas: HTMLCanvasElement,
+    logicalWidth: number,
+    logicalHeight: number,
+  ): ShaderFrameSize {
+    const { width, height } = shaderTextureSize(logicalWidth, logicalHeight);
+    if (
+      targetCanvas.width !== width ||
+      targetCanvas.height !== height ||
+      this.textureWidth !== width ||
+      this.textureHeight !== height
+    ) {
+      targetCanvas.width = width;
+      targetCanvas.height = height;
+      this.resizeTexture(this.sourceTexture, width, height);
+      this.resizeTexture(this.overlayTexture, width, height);
+      this.resizeTexture(this.pingTexture, width, height);
+      this.resizeTexture(this.pongTexture, width, height);
+      this.textureWidth = width;
+      this.textureHeight = height;
+      this.uploadedSource = null;
+      this.uploadedRevision = null;
+      this.uploadedWidth = 0;
+      this.uploadedHeight = 0;
+    }
+    return { width, height };
+  }
+
+  /**
+   * Claim the shared canvas before the frame's batches draw into it.
+   *
+   * The note batch adopts whatever backing store the canvas has, so the shader
+   * owner must publish the frame's size first. Without this the batch reads the
+   * browser's default 300×150 store and derives the wrong clip ratio.
+   */
+  prepareTarget(
+    targetCanvas: HTMLCanvasElement | null,
+    logicalWidth: number,
+    logicalHeight: number,
+  ): boolean {
+    if (!targetCanvas || !this.ensure(targetCanvas)) {
+      return false;
+    }
+    if (!(logicalWidth > 0) || !(logicalHeight > 0)) {
+      return false;
+    }
+    this.allocateTarget(targetCanvas, logicalWidth, logicalHeight);
+    return true;
+  }
+
+  /**
    * Runs `passes` over `sourceCanvas` and composites the result into `targetCanvas`.
    *
    * Returns false when there is nothing to draw or GL is unavailable. `viewport`
@@ -1058,29 +1115,11 @@ export class ShaderPipeline {
       measurement.width > 0 ? measurement.width : sourceCanvas.width / fallbackRatio;
     const displayHeight =
       measurement.height > 0 ? measurement.height : sourceCanvas.height / fallbackRatio;
-    const { width, height } = shaderTextureSize(displayWidth, displayHeight);
-    if (
-      targetCanvas.width !== width ||
-      targetCanvas.height !== height ||
-      this.textureWidth !== width ||
-      this.textureHeight !== height
-    ) {
-      targetCanvas.width = width;
-      targetCanvas.height = height;
-      this.resizeTexture(this.sourceTexture, width, height);
-      this.resizeTexture(this.overlayTexture, width, height);
-      this.resizeTexture(this.pingTexture, width, height);
-      this.resizeTexture(this.pongTexture, width, height);
-      this.textureWidth = width;
-      this.textureHeight = height;
-      // Resizing reallocates every texture, so any retained upload describes a
-      // surface that no longer exists. Without this the reuse check accepts the
-      // previous upload and the pass samples a freshly cleared texture.
-      this.uploadedSource = null;
-      this.uploadedRevision = null;
-      this.uploadedWidth = 0;
-      this.uploadedHeight = 0;
-    }
+    const { width, height } = this.allocateTarget(
+      targetCanvas,
+      displayWidth,
+      displayHeight,
+    );
     const view: ShaderView = viewport ?? {
       left: 0,
       top: 0,
