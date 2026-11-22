@@ -4,6 +4,20 @@ User-visible changes for the current release. Chinese first, English second. The
 
 Inside either language section the notes may use two inline annotations: `@name` credits a GitHub user (rendered bold and underlined), and `<red>text</red>` colours a run of text. The tag name is the colour: `accent`, `red`, `yellow`, `green`, `blue`, `purple`, or `gray`. Each resolves through the active theme, so write the name rather than a hex value. GitHub drops the unknown tag, so the release page still reads as plain words.
 
+## 1.0.16-local.5
+
+### 中文
+
+**修复**
+
+- 修复框选音符时背景着色器立刻失效、判定线变透明的问题：预览把同一张画布和同一个 WebGL 上下文同时交给实例化批次和着色器通道，实例化批次每一帧都按设备像素比把这张画布调成 `1081×763`，着色器通道随后又按逻辑尺寸改回 `865×610`。尺寸每帧被改写两次，对应的纹理就被重新分配两次，内容清零；而纹理上传缓存只比较绘制修订号，认为上传仍然有效，于是着色器通道整帧采样到刚被清空的纹理，输出全透明。现在共享画布由着色器通道独占尺寸，实例化批次记录已有尺寸而不再改写它；纹理重新分配时同时作废上传缓存。
+
+### English
+
+**Fixes**
+
+- Selecting notes no longer kills the background shader or blanks the judge lines: the preview handed the same canvas and the same WebGL context to both the instanced batch and the shader pass. The batch resized that canvas to the device-pixel size `1081×763` every frame and the shader pass resized it back to the logical `865×610`, so the surface was reassigned twice per frame and every shader texture was reallocated and cleared, while the upload cache still reported the previous upload as valid. The shader pass now owns the size of the shared canvas, the instanced batch adopts the existing size instead of rewriting it, and a texture reallocation invalidates the upload cache.
+
 ## 1.0.16-local.4
 
 ### 中文

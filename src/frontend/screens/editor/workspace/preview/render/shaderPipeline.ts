@@ -1056,6 +1056,13 @@ export class ShaderPipeline {
       this.resizeTexture(this.pongTexture, width, height);
       this.textureWidth = width;
       this.textureHeight = height;
+      // Resizing reallocates every texture, so any retained upload describes a
+      // surface that no longer exists. Without this the reuse check accepts the
+      // previous upload and the pass samples a freshly cleared texture.
+      this.uploadedSource = null;
+      this.uploadedRevision = null;
+      this.uploadedWidth = 0;
+      this.uploadedHeight = 0;
     }
     const view: ShaderView = viewport ?? {
       left: 0,
