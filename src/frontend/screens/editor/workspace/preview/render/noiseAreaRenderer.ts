@@ -9,7 +9,7 @@ import type { TempoSource } from "../../../../../../core/global/chart/timing/eve
 import type { PreviewFrame } from "../scene/previewTypes.ts";
 import { canvasPixelRatio } from "../../../canvas/canvas2d.ts";
 import { NoiseFieldPipeline, type NoiseMaskEntry } from "./noiseFieldPipeline.ts";
-import { partitionNoiseMaskEntries } from "./noiseGeometry.ts";
+import { noiseSourceSlice, partitionNoiseMaskEntries } from "./noiseGeometry.ts";
 import {
   noiseLinePreviewArea,
   sampleNoiseLinePreviewInto,
@@ -32,6 +32,18 @@ interface MutableNoiseMaskEntry extends Omit<NoiseMaskEntry, "vertices"> {
 /** Create one reusable GPU-entry shell; its point arrays are filled per frame. */
 function createMaskEntry(): MutableNoiseMaskEntry {
   return { state: "hidden", invert: false, vertices: [] };
+}
+
+function drawViewportSlice(
+  destination: CanvasRenderingContext2D,
+  source: HTMLCanvasElement,
+  frame: PreviewFrame,
+  fallbackRatio: number,
+  width: number,
+  height: number,
+): void {
+  const slice = noiseSourceSlice(source, frame, fallbackRatio);
+  destination.drawImage(source, slice.x, slice.y, slice.width, slice.height, 0, 0, width, height);
 }
 
 /** Maintains reusable viewport-sized surfaces and the optional NoiseField pipeline. */
@@ -320,14 +332,10 @@ export class NoiseAreaRenderer {
     }
     scene.clearRect(0, 0, width, height);
     const { left, top } = frame.viewport;
-    const sx = left * ratio,
-      sy = top * ratio,
-      sw = frame.viewport.width * ratio,
-      sh = frame.viewport.height * ratio;
-    scene.drawImage(primary, sx, sy, sw, sh, 0, 0, width, height);
+    drawViewportSlice(scene, primary, frame, ratio, width, height);
     const preparedNotes = notes ?? prepareNotes?.() ?? null;
     if (preparedNotes) {
-      scene.drawImage(preparedNotes, sx, sy, sw, sh, 0, 0, width, height);
+      drawViewportSlice(scene, preparedNotes, frame, ratio, width, height);
     }
     let rendered: HTMLCanvasElement | null = null;
     if (detailed) {
