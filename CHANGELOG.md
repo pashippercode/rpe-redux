@@ -4,12 +4,13 @@ User-visible changes for the current release. Chinese first, English second. The
 
 Inside either language section the notes may use two inline annotations: `@name` credits a GitHub user (rendered bold and underlined), and `<red>text</red>` colours a run of text. The tag name is the colour: `accent`, `red`, `yellow`, `green`, `blue`, `purple`, or `gray`. Each resolves through the active theme, so write the name rather than a hex value. GitHub drops the unknown tag, so the release page still reads as plain words.
 
-## 1.0.16-local.6
+## 1.0.16-local.7
 
 ### 中文
 
 **修复**
 
+- 修复噪点区域出现时判定线和音符按设备像素比缩到左上角并被截断的问题：`NoiseAreaRenderer` 合成预览场景时，原本对主画布和音符层都乘同一个全局 `canvasPixelRatio()` 来切视口矩形，而开启着色器共享画布后音符层的实际后备尺寸来自 `shaderTextureSize`（逻辑分辨率或最高 `1920×1080` 降采样），不再乘设备像素比。现在每张源画布都按各自后备尺寸与帧逻辑尺寸的真实比例切取视口区域。
 - 修复判定线和音符被缩到预览左上角的问题：着色器通道原本会自己再测量一次源画布来决定渲染纹理的尺寸，而音符和判定线是按这一帧的逻辑尺寸绘制的，两者只要不一致，写进叠加纹理的整层内容就会按错误的比例缩放。现在合成阶段把帧的逻辑尺寸直接交给着色器通道，只有在没有调用方提供时才回退到测量画布。
 - 修复首帧把默认的画布尺寸当成帧尺寸的问题：实例化批次会沿用共享画布已有的尺寸，而着色器通道过去是在批次画完之后才设置这个尺寸，于是这一帧读到的是浏览器默认的 `300×150`，据此算出的裁剪矩形比例是错的。现在由着色器通道在绘制之前按帧尺寸分配共享画布。
 - 修复自定义 shader 生效后整块预览变透明的问题：预览共享的 WebGL 上下文里，实例化批次会把顶点属性的分发除数留在槽位上，着色器通道复用同一个槽位时，整个全屏四边形只会读到一个顶点，纹理坐标塌缩成单点，采样结果整帧为空。着色器通道现在在绘制前把用到的属性分发除数归零。
@@ -20,6 +21,7 @@ Inside either language section the notes may use two inline annotations: `@name`
 
 **Fixes**
 
+- Judge lines and notes no longer shrink into the top-left corner and clip when a noise area is visible: `NoiseAreaRenderer` used to slice both the primary canvas and the note layer with the global `canvasPixelRatio()`, whereas the shared shader note surface is sized by `shaderTextureSize` in logical pixels (or downsampled to `1920×1080`) rather than device pixels. Each source canvas is now sliced at its own backing-to-frame scale.
 - Judge lines and notes no longer shrink into the preview's top-left corner: the shader pass used to measure the source canvas a second time to pick its render-texture size, while notes and lines were drawn in that frame's logical size. Whenever the two disagreed, everything written into the overlay texture was rescaled. The composite now hands the pass the frame's logical size and only falls back to measuring when no caller supplies one.
 - The first frame no longer treats the canvas's default size as the frame size: the instanced batch adopts whatever backing store the shared canvas already has, and the shader pass used to assign that store only after the batch had drawn, so that frame read the browser's default `300×150` and derived a wrong clip rectangle. The pass now allocates the shared canvas before the frame's batches draw.
 - Custom shaders no longer blank the preview: in the preview's shared WebGL context an instanced batch can leave a vertex-attribute divisor on an attribute slot, so when the shader pass reused that slot every fragment of the full-screen quad read a single vertex, the texture coordinate collapsed to one point, and the whole frame sampled empty. The shader pass now clears the divisor on the slots it uses before drawing.
