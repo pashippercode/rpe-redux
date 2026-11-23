@@ -108,7 +108,10 @@ import type { LibraryProjectRef } from "../../../../../../core/global/library/ty
 import { createEditorFrameRuntime } from "../frame/frameRuntime.ts";
 import { createEditorSessionRenderer } from "../bridge/sessionRenderer.ts";
 import { serializeChartOffThread } from "../../document/save/chartSerializeOffThread.ts";
-import { bindCurrentDocumentStore } from "../../../../../platform/documentStoreHandle.ts";
+import {
+  bindCurrentDocumentAssets,
+  bindCurrentDocumentStore,
+} from "../../../../../platform/documentStoreHandle.ts";
 import { bindEditorPlayback } from "../../preview/playback/playbackBindings.ts";
 import { bindEditorSelection } from "../bindings/selectionBindings.ts";
 import { createEditorFeedback } from "../session/feedback.ts";
@@ -1127,6 +1130,7 @@ export function createEditorAssembly(
     nextAssets: AssetMap,
     task?: LoadTask,
   ): Promise<void> {
+    bindCurrentDocumentAssets(nextAssets);
     return documentRuntime.loadCandidate(candidate, nextAssets, task);
   }
   /** Saves the live document into the library. */
