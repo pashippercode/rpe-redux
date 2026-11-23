@@ -6,6 +6,11 @@
  */
 import type { TauriDocumentStore } from "../../core/platform/desktop/documentStore.ts";
 
+export type ReadableDocumentAssets = ReadonlyMap<string, Uint8Array> & {
+  names?: () => Iterable<string>;
+  read?: (name: string) => Promise<Uint8Array | undefined>;
+};
+
 /**
  * The live desktop document store.
  *
@@ -19,9 +24,27 @@ import type { TauriDocumentStore } from "../../core/platform/desktop/documentSto
  */
 let current: { store: TauriDocumentStore | null; token: object } | null = null;
 
+let currentAssets: { assets: ReadableDocumentAssets | null; token: object } | null = null;
+
 /** Returns the mounted desktop document store, or null when none is bound. */
 export function currentDocumentStore(): TauriDocumentStore | null {
   return current?.store ?? null;
+}
+
+export function currentDocumentAssets(): ReadableDocumentAssets | null {
+  return currentAssets?.assets ?? null;
+}
+
+export function bindCurrentDocumentAssets(next: ReadableDocumentAssets | null): () => void {
+  const token = {};
+  currentAssets = { assets: next, token };
+  let active = true;
+  return () => {
+    if (active && currentAssets?.token === token) {
+      active = false;
+      currentAssets = null;
+    }
+  };
 }
 
 /**

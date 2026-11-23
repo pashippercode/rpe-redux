@@ -32,6 +32,38 @@ export function noiseThemeEntryBelongsToPass(state: string, active: boolean): bo
   return state !== "hidden" && (state === "active") === active;
 }
 
+export interface NoiseSourceSlice {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export function noiseSourceSlice(
+  source: { readonly width: number; readonly height: number },
+  frame: {
+    readonly width: number;
+    readonly height: number;
+    readonly viewport: {
+      readonly left: number;
+      readonly top: number;
+      readonly width: number;
+      readonly height: number;
+    };
+  },
+  fallbackRatio: number,
+): NoiseSourceSlice {
+  const ratioX = frame.width > 0 && source.width > 0 ? source.width / frame.width : fallbackRatio;
+  const ratioY =
+    frame.height > 0 && source.height > 0 ? source.height / frame.height : fallbackRatio;
+  return {
+    x: frame.viewport.left * ratioX,
+    y: frame.viewport.top * ratioY,
+    width: frame.viewport.width * ratioX,
+    height: frame.viewport.height * ratioY,
+  };
+}
+
 /** Partition visible mask entries once for the Canvas fallback's stable order. */
 export function partitionNoiseMaskEntries(
   entries: readonly NoiseMaskClassification[],

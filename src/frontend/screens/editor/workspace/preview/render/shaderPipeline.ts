@@ -51,6 +51,17 @@ export function shaderTextureSize(
   };
 }
 
+/**
+ * Logical size of one drawn frame.
+ *
+ * Batches that share this pipeline's canvas place geometry in this space, so the
+ * pass must size its texture and uniforms from the same numbers.
+ */
+export interface ShaderFrameSize {
+  readonly width: number;
+  readonly height: number;
+}
+
 /** Display rectangle: the preview viewport or source-canvas bounds. */
 export interface ShaderViewportRect {
   left: number;
@@ -755,36 +766,40 @@ export class ShaderPipeline {
       return false;
     }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    if (sourceCanvas.width === width && sourceCanvas.height === height) {
-      // Storage is allocated once when the render target changes size. Updating
-      // an existing store avoids a per-frame texImage2D reallocation on the
-      // Canvas2D -> WebGL upload path.
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      if (sourceCanvas.width === width && sourceCanvas.height === height) {
+        // Storage is allocated once when the render target changes size. Updating
+        // an existing store avoids a per-frame texImage2D reallocation on the
+        // Canvas2D -> WebGL upload path.
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+        return true;
+      }
+      let staging = this.sourceStaging ?? null;
+      if (!staging) {
+        staging = document.createElement("canvas");
+        this.sourceStaging = staging;
+      }
+      if (staging.width !== width || staging.height !== height) {
+        staging.width = width;
+        staging.height = height;
+      }
+      let stagingContext = this.sourceStagingContext ?? null;
+      if (!stagingContext) {
+        stagingContext = staging.getContext("2d");
+        this.sourceStagingContext = stagingContext;
+      }
+      if (!stagingContext) {
+        return false;
+      }
+      // The source draw covers the entire staging surface, including transparent
+      // pixels, so clearing it first would be a redundant full-canvas pass.
+      stagingContext.drawImage(sourceCanvas, 0, 0, width, height);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, staging);
       return true;
+    } finally {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     }
-    let staging = this.sourceStaging ?? null;
-    if (!staging) {
-      staging = document.createElement("canvas");
-      this.sourceStaging = staging;
-    }
-    if (staging.width !== width || staging.height !== height) {
-      staging.width = width;
-      staging.height = height;
-    }
-    let stagingContext = this.sourceStagingContext ?? null;
-    if (!stagingContext) {
-      stagingContext = staging.getContext("2d");
-      this.sourceStagingContext = stagingContext;
-    }
-    if (!stagingContext) {
-      return false;
-    }
-    // The source draw covers the entire staging surface, including transparent
-    // pixels, so clearing it first would be a redundant full-canvas pass.
-    stagingContext.drawImage(sourceCanvas, 0, 0, width, height);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, staging);
-    return true;
   }
 
   /** Upload the primary source without compositing another Canvas2D layer. */
@@ -906,6 +921,24 @@ export class ShaderPipeline {
     }
   }
 
+  /**
+   * Reset one attribute's instancing divisor for a non-instanced quad draw.
+   *
+   * The preview's shared GL context also hosts instanced batches that leave a
+   * divisor on their attribute slots. A divisor left on a slot this pipeline
+   * reuses makes `drawArrays` read one vertex for every fragment, so the tex
+   * coordinate collapses to that vertex and the pass samples a single texel.
+   */
+  private clearAttributeDivisor(location: number): void {
+    const gl = this.context() as WebGL2RenderingContext;
+    if (typeof gl.vertexAttribDivisor !== "function") {
+      return;
+    }
+    if (gl.getVertexAttrib(location, gl.VERTEX_ATTRIB_ARRAY_DIVISOR) !== 0) {
+      gl.vertexAttribDivisor(location, 0);
+    }
+  }
+
   /** Draws one full-screen quad through `result` into `framebuffer`. */
   private drawCompositeQuad(
     sourceTexture: WebGLTexture,
@@ -927,10 +960,12 @@ export class ShaderPipeline {
     if (this.compositePosition >= 0) {
       gl.enableVertexAttribArray(this.compositePosition);
       gl.vertexAttribPointer(this.compositePosition, 2, gl.FLOAT, false, 16, 0);
+      this.clearAttributeDivisor(this.compositePosition);
     }
     if (this.compositeTexCoord >= 0) {
       gl.enableVertexAttribArray(this.compositeTexCoord);
       gl.vertexAttribPointer(this.compositeTexCoord, 2, gl.FLOAT, false, 16, 8);
+      this.clearAttributeDivisor(this.compositeTexCoord);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
@@ -969,15 +1004,69 @@ export class ShaderPipeline {
     if (position >= 0) {
       gl.enableVertexAttribArray(position);
       gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 16, 0);
+      this.clearAttributeDivisor(position);
     }
     if (texCoord >= 0) {
       gl.enableVertexAttribArray(texCoord);
       gl.vertexAttribPointer(texCoord, 2, gl.FLOAT, false, 16, 8);
+      this.clearAttributeDivisor(texCoord);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, inputTexture);
     this.setUniforms(result, values, seconds, width, height, rect, resolution);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  /** Size the target canvas and every pass texture for one logical frame. */
+  allocateTarget(
+    targetCanvas: HTMLCanvasElement,
+    logicalWidth: number,
+    logicalHeight: number,
+    textureLimit?: { width: number; height: number } | null,
+  ): ShaderFrameSize {
+    const { width, height } = textureLimit
+      ? {
+          width: Math.max(1, Math.round(textureLimit.width)),
+          height: Math.max(1, Math.round(textureLimit.height)),
+        }
+      : shaderTextureSize(logicalWidth, logicalHeight);
+    if (
+      targetCanvas.width !== width ||
+      targetCanvas.height !== height ||
+      this.textureWidth !== width ||
+      this.textureHeight !== height
+    ) {
+      targetCanvas.width = width;
+      targetCanvas.height = height;
+      this.resizeTexture(this.sourceTexture, width, height);
+      this.resizeTexture(this.overlayTexture, width, height);
+      this.resizeTexture(this.pingTexture, width, height);
+      this.resizeTexture(this.pongTexture, width, height);
+      this.textureWidth = width;
+      this.textureHeight = height;
+      this.uploadedSource = null;
+      this.uploadedRevision = null;
+      this.uploadedWidth = 0;
+      this.uploadedHeight = 0;
+    }
+    return { width, height };
+  }
+
+  /** Claim the shared canvas before the frame's batches draw into it. */
+  prepareTarget(
+    targetCanvas: HTMLCanvasElement | null,
+    logicalWidth: number,
+    logicalHeight: number,
+    textureLimit?: { width: number; height: number } | null,
+  ): boolean {
+    if (!targetCanvas || !this.ensure(targetCanvas)) {
+      return false;
+    }
+    if (!(logicalWidth > 0) || !(logicalHeight > 0)) {
+      return false;
+    }
+    this.allocateTarget(targetCanvas, logicalWidth, logicalHeight, textureLimit);
+    return true;
   }
 
   /**
@@ -1003,6 +1092,7 @@ export class ShaderPipeline {
     overlayCanvas?: HTMLCanvasElement | null,
     inputLayer?: ShaderInputLayer | null,
     textureLimit?: { width: number; height: number } | null,
+    frameSize?: ShaderFrameSize | null,
   ): boolean {
     renderProfileMark("preview.shader.render.start");
     this.lastFrameMetrics.sourceUploadMs = 0;
@@ -1012,33 +1102,20 @@ export class ShaderPipeline {
       return false;
     }
     const gl = this.context();
-    const measurement = measureCanvas(sourceCanvas);
     const fallbackRatio = canvasPixelRatio();
+    const measured = measureCanvas(sourceCanvas);
+    const measurement =
+      frameSize && frameSize.width > 0 && frameSize.height > 0 ? frameSize : measured;
     const displayWidth =
       measurement.width > 0 ? measurement.width : sourceCanvas.width / fallbackRatio;
     const displayHeight =
       measurement.height > 0 ? measurement.height : sourceCanvas.height / fallbackRatio;
-    const { width, height } = textureLimit
-      ? {
-          width: Math.max(1, Math.round(textureLimit.width)),
-          height: Math.max(1, Math.round(textureLimit.height)),
-        }
-      : shaderTextureSize(displayWidth, displayHeight);
-    if (
-      targetCanvas.width !== width ||
-      targetCanvas.height !== height ||
-      this.textureWidth !== width ||
-      this.textureHeight !== height
-    ) {
-      targetCanvas.width = width;
-      targetCanvas.height = height;
-      this.resizeTexture(this.sourceTexture, width, height);
-      this.resizeTexture(this.overlayTexture, width, height);
-      this.resizeTexture(this.pingTexture, width, height);
-      this.resizeTexture(this.pongTexture, width, height);
-      this.textureWidth = width;
-      this.textureHeight = height;
-    }
+    const { width, height } = this.allocateTarget(
+      targetCanvas,
+      displayWidth,
+      displayHeight,
+      textureLimit,
+    );
     const view: ShaderView = viewport ?? {
       left: 0,
       top: 0,

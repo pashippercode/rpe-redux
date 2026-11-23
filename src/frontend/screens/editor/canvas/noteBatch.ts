@@ -5,7 +5,7 @@
  */
 /* eslint-disable max-lines -- the batch keeps texture, instance, and context-loss ownership together. */
 import { canvasPixelRatio } from "./canvas2d.ts";
-import type { WebGlRenderBackend } from "./renderBackend.ts";
+import type { RenderSurfaceFrame, WebGlRenderBackend } from "./renderBackend.ts";
 import { tryCreateWebGl2Backend } from "./renderBackend.ts";
 import { createHoldLayoutScratch, holdLayoutInto, holdRenderRotation } from "./noteGeometry.ts";
 import {
@@ -78,6 +78,15 @@ export class NoteBatch {
   private readonly diagnostics: NoteBatchDiagnostics;
   private readonly backend: WebGlRenderBackend | null;
   private readonly removeSharedLifecycle: (() => void) | null;
+  /**
+   * Whether the canvas backing store belongs to another owner.
+   *
+   * The preview shares one canvas and one GL context between this batch, the
+   * guide batch, and the shader pipeline. The shader pipeline sizes that
+   * surface, so resizing it here for the device pixel ratio would clear the
+   * frame and reallocate every shader texture on each pass.
+   */
+  private readonly sharedSurface: boolean;
   private get gl(): WebGL2RenderingContext | null {
     return this.backend?.gl as WebGL2RenderingContext | null;
   }
@@ -148,6 +157,7 @@ export class NoteBatch {
   ) {
     this.canvas = canvas;
     this.diagnostics = new NoteBatchDiagnostics(surface);
+    this.sharedSurface = sharedBackend !== null;
     this.backend =
       sharedBackend ??
       tryCreateWebGl2Backend(
@@ -501,11 +511,10 @@ export class NoteBatch {
     const safeScale = Number.isFinite(pixelRatioScale)
       ? Math.max(0.5, Math.min(1, pixelRatioScale))
       : 1;
-    const backing = this.backend.resize(
-      { width, height },
-      Math.max(1, canvasPixelRatio() * safeScale),
-    );
-    if (!this.backend.begin(true)) {
+    const backing = this.sharedSurface
+      ? this.adoptSharedSurface(width, height)
+      : this.backend.resize({ width, height }, Math.max(1, canvasPixelRatio() * safeScale));
+    if (!backing || !this.backend.begin(true)) {
       this.active = false;
       this.reportState();
       this.retainedLineBatchValid = false;
@@ -532,6 +541,28 @@ export class NoteBatch {
     }
     this.reportState();
     return preserveLines && this.groups.hasLineInstances();
+  }
+
+  /**
+   * Take the size the shared canvas already has instead of resizing it.
+   *
+   * The shader pipeline owns this surface and sizes it to the logical preview
+   * rect. Resizing from here for the device pixel ratio would clear the frame
+   * and force the pipeline to reallocate every texture.
+   */
+  private adoptSharedSurface(width: number, height: number): RenderSurfaceFrame | null {
+    const backend = this.backend;
+    if (!backend) {
+      return null;
+    }
+    const frame = backend.adopt({ width, height });
+    if (!frame) {
+      return null;
+    }
+    if (!frame.width || !frame.height) {
+      return null;
+    }
+    return frame;
   }
 
   /** Mark the current line instances as reusable for a later static frame. */
@@ -1253,6 +1284,7 @@ export class NoteBatch {
     if (repeat === true) {
       this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.REPEAT);
     }
+    this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false);
     this.gl.pixelStorei(this.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
     this.gl.texImage2D(
       this.gl.TEXTURE_2D,

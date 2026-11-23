@@ -173,6 +173,33 @@ export class WebGlRenderBackend {
     return frame;
   }
 
+  /**
+   * Record the canvas's existing backing store without resizing it.
+   *
+   * Several GPU batches can share one canvas and one context. Only the owner of
+   * that surface decides its size, so a secondary user records the size that is
+   * already there instead of reassigning it and clearing the frame.
+   */
+  adopt(measurement: CanvasMeasurement): RenderSurfaceFrame | null {
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    if (!width || !height) {
+      return null;
+    }
+    const frame: RenderSurfaceFrame = {
+      width,
+      height,
+      ratio: width / Math.max(1, measurement.width),
+      logicalWidth: measurement.width,
+      logicalHeight: measurement.height,
+    };
+    this.frame = frame;
+    if (this.isUsable()) {
+      this.gl.viewport(0, 0, width, height);
+    }
+    return frame;
+  }
+
   /** Begin a transparent GPU pass. */
   begin(clear = true): RenderSurfaceFrame | null {
     const frame = this.frame;

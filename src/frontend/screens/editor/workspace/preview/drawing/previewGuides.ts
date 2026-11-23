@@ -557,9 +557,15 @@ function lineColor(color: number[]): string {
   return css;
 }
 
-/** Draws one judge line, falling back to a solid rectangle when its texture fails. */
-export function drawLine(
-  surface: PreviewTextureSurface,
+/**
+ * Paints a lined judge line's subtitle.
+ *
+ * A line carrying `textEvents` shows its lyrics instead of a skin quad, so this
+ * is the whole of what that line draws on the Canvas pass. It runs on its own so
+ * the GPU batch can own the quad of an ordinary line while a lined line still
+ * gets its text.
+ */
+export function drawLineLyrics(
   context: CanvasRenderingContext2D,
   line: JudgeLine,
   state: LineState,
@@ -571,52 +577,70 @@ export function drawLine(
   context.globalAlpha =
     clamp01(state.alpha / 255) * clamp01(state.color[3] ?? 1) * clamp01(opacity);
   context.fillStyle = lineColor(state.color);
+  context.font = `${52 * scale}px Saira, 'Source Han Sans CN', sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(state.text, 0, 0);
+  context.restore();
+}
+
+/** Draws one judge line, falling back to a solid rectangle when its texture fails. */
+export function drawLine(
+  surface: PreviewTextureSurface,
+  context: CanvasRenderingContext2D,
+  line: JudgeLine,
+  state: LineState,
+  scale: number,
+  opacity = 1,
+): void {
   if (line.extended?.textEvents?.length) {
-    context.font = `${52 * scale}px Saira, 'Source Han Sans CN', sans-serif`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(state.text, 0, 0);
-  } else {
-    const defaultLine = !line.Texture || line.Texture === "line.png";
-    const descriptor = !defaultLine ? surface.images?.describe?.(line.Texture ?? "") : null;
-    const stateScale =
-      scale * Math.max(Math.abs(state.scaleX), Math.abs(state.scaleY)) * canvasPixelRatio();
-    const viewportScale = viewportTextureScale(
-      stateScale,
-      descriptor?.naturalWidth ?? 0,
-      descriptor?.naturalHeight ?? 0,
-    );
-    const rawTexture: PreviewImage | null = defaultLine
-      ? null
-      : surface.images?.texture
-        ? surface.images.texture(line.Texture ?? "", viewportScale)
-        : (surface.images?.images?.get(line.Texture ?? "") ?? null);
-    const source = rawTexture?.source ?? (rawTexture as CanvasImageSource | null);
-    const texture = defaultLine
-      ? surface.skin?.tinted("line", state.color)
-      : (surface.skin?.tintedSource(`line:${line.Texture}`, source, state.color) ?? source);
-    if (defaultLine) {
-      const width = DEFAULT_LINE_WIDTH * scale;
-      const height = DEFAULT_LINE_HEIGHT * surface.lineScale * scale;
-      const drawn = texture
-        ? Boolean(surface.skin?.drawAligned(context, "line", texture, 0, 0, width, height))
-        : false;
-      if (!drawn) {
-        context.fillRect(-width / 2, -height / 2, width, height);
-      }
-    } else if (texture && rawTexture) {
-      const anchor = line.anchor ?? [0.5, 0.5];
-      // Decoded records expose intrinsic dimensions; raw bitmaps may expose only width/height.
-      const width = rawTexture.naturalWidth ?? rawTexture.width ?? 0;
-      const height = rawTexture.naturalHeight ?? rawTexture.height ?? 0;
-      context.drawImage(
-        texture,
-        -width * anchor[0] * scale,
-        -height * (1 - anchor[1]) * scale,
-        width * scale,
-        height * scale,
-      );
+    drawLineLyrics(context, line, state, scale, opacity);
+    return;
+  }
+  context.save();
+  context.scale(state.scaleX, state.scaleY);
+  context.globalAlpha =
+    clamp01(state.alpha / 255) * clamp01(state.color[3] ?? 1) * clamp01(opacity);
+  context.fillStyle = lineColor(state.color);
+  const defaultLine = !line.Texture || line.Texture === "line.png";
+  const descriptor = !defaultLine ? surface.images?.describe?.(line.Texture ?? "") : null;
+  const stateScale =
+    scale * Math.max(Math.abs(state.scaleX), Math.abs(state.scaleY)) * canvasPixelRatio();
+  const viewportScale = viewportTextureScale(
+    stateScale,
+    descriptor?.naturalWidth ?? 0,
+    descriptor?.naturalHeight ?? 0,
+  );
+  const rawTexture: PreviewImage | null = defaultLine
+    ? null
+    : surface.images?.texture
+      ? surface.images.texture(line.Texture ?? "", viewportScale)
+      : (surface.images?.images?.get(line.Texture ?? "") ?? null);
+  const source = rawTexture?.source ?? (rawTexture as CanvasImageSource | null);
+  const texture = defaultLine
+    ? surface.skin?.tinted("line", state.color)
+    : (surface.skin?.tintedSource(`line:${line.Texture}`, source, state.color) ?? source);
+  if (defaultLine) {
+    const width = DEFAULT_LINE_WIDTH * scale;
+    const height = DEFAULT_LINE_HEIGHT * surface.lineScale * scale;
+    const drawn = texture
+      ? Boolean(surface.skin?.drawAligned(context, "line", texture, 0, 0, width, height))
+      : false;
+    if (!drawn) {
+      context.fillRect(-width / 2, -height / 2, width, height);
     }
+  } else if (texture && rawTexture) {
+    const anchor = line.anchor ?? [0.5, 0.5];
+    // Decoded records expose intrinsic dimensions; raw bitmaps may expose only width/height.
+    const width = rawTexture.naturalWidth ?? rawTexture.width ?? 0;
+    const height = rawTexture.naturalHeight ?? rawTexture.height ?? 0;
+    context.drawImage(
+      texture,
+      -width * anchor[0] * scale,
+      -height * (1 - anchor[1]) * scale,
+      width * scale,
+      height * scale,
+    );
   }
   context.restore();
 }
