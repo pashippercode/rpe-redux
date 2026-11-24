@@ -6,7 +6,7 @@ Inside either language section the notes may use inline annotations: `@name` cre
 
 Contributor credits are generated from the Changesets. A Changeset names them in a language-neutral `### Contributors` block, and one without that block credits the human author of the pull request that added it; bots, maintainers, and logins the note already names are left out. The release closes the change's last bullet with the names and ends each language section with a contributor category (`贡献者` / `Contributors`).
 
-## 1.0.16
+## 1.0.16-local.8
 
 ### 中文
 
